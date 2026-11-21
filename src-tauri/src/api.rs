@@ -1,10 +1,13 @@
 //! 业务命令：登录 / 列表 / 详情 / 播放 / 互动。
 
-use crate::net::{base, edge};
-use crate::session::SessionStore;
+use crate::net::{base, edge, edge_while, EdgeError, EDGE_CONTEXT_CHANGED};
+use crate::session::{Credentials, SessionStore};
 use serde_json::{json, Value};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
+
+const SESSION_EXPIRED: &str = "HTTP 401 登录已过期";
+const SESSION_CHANGED: &str = "登录状态已变化，请重试";
 
 pub struct Api {
     pub session: SessionStore,
@@ -19,33 +22,74 @@ impl Api {
 
     async fn get(&self, path: &str) -> Result<Value, String> {
         let origin = base();
-        let token = self.session.token(&origin);
-        edge(&origin, "GET", path, None, token.as_deref()).await
+        let credentials = self.session.credentials(&origin);
+        self.request(&origin, credentials.as_ref(), "GET", path, None, || true)
+            .await
     }
 
-    /// POST（游客也可调用，有登录态时带上 token）：新播放接口需要。
-    async fn post(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
-        let origin = base();
-        let token = self.session.token(&origin);
-        edge(&origin, "POST", path, body, token.as_deref()).await
+    async fn request(
+        &self,
+        origin: &str,
+        credentials: Option<&Credentials>,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        is_current: impl Fn() -> bool + Sync,
+    ) -> Result<Value, String> {
+        let token = credentials.map(|c| c.token.as_str());
+        edge_while(origin, method, path, body, token, is_current)
+            .await
+            .map_err(|error| match credentials {
+                Some(c) => self.session_error(origin, c, error),
+                None => error.into(),
+            })
+    }
+
+    fn session_error(&self, origin: &str, credentials: &Credentials, error: EdgeError) -> String {
+        let expired = match &error {
+            EdgeError::Unauthorized => true,
+            EdgeError::Business(message) => business_session_expired(message),
+            EdgeError::ContextChanged | EdgeError::Transport(_) => false,
+        };
+        if !expired {
+            return error.into();
+        }
+        if self.session.clear_if_matches(origin, credentials) {
+            SESSION_EXPIRED.into()
+        } else {
+            SESSION_CHANGED.into()
+        }
     }
 
     async fn authed(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
         let origin = base();
-        let token = self
+        let credentials = self
             .session
-            .token(&origin)
+            .credentials(&origin)
             .ok_or_else(|| "请先登录".to_string())?;
-        match edge(&origin, method, path, body, Some(&token)).await {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                if e.starts_with("HTTP 401") && base() == origin {
-                    self.session.clear();
-                }
-                Err(e)
-            }
-        }
+        self.request(&origin, Some(&credentials), method, path, body, || true)
+            .await
     }
+}
+
+fn business_session_expired(message: &str) -> bool {
+    let reason = message
+        .split(['，', ',', '。', '！', '!', '；', ';', '：', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let reason = reason.strip_prefix("您的").unwrap_or(reason);
+    matches!(
+        reason,
+        "请先登录"
+            | "请先登录后重试"
+            | "请先登录后再试"
+            | "请先登录后继续"
+            | "登录已过期"
+            | "登录状态已过期"
+            | "当前登录已过期"
+            | "当前登录状态已过期"
+    )
 }
 
 /// API/运行错误与自检统一写入 debug.log，每行附 RFC 3339 UTC 时间和进程编号。
@@ -79,12 +123,7 @@ pub async fn line_state() -> Result<Value, String> {
 /// 手动切换线路：立即生效并落盘（下次启动沿用）。
 #[tauri::command]
 pub async fn line_set(state: State<'_, Api>, url: String) -> Result<String, String> {
-    let previous = base();
-    let next = crate::net::set_base(&url)?;
-    if previous != next {
-        state.session.clear();
-    }
-    Ok(next)
+    crate::net::set_base(&url, || state.session.clear())
 }
 
 /// 从地址发布页抓镜像线路（只在用户点开「线路」时调用）。
@@ -429,39 +468,33 @@ pub async fn api_register(
 }
 
 #[tauri::command]
-pub async fn api_logout(state: State<'_, Api>) -> Result<Value, String> {
+pub fn api_logout(state: State<'_, Api>) -> Result<Value, String> {
     let origin = base();
-    let token = state.session.token(&origin);
-    let _ = edge(
-        &origin,
-        "POST",
-        "/api/account/logout",
-        None,
-        token.as_deref(),
-    )
-    .await;
-    state.session.clear();
+    if let Some(token) = state.session.take_token(&origin) {
+        tauri::async_runtime::spawn(async move {
+            let _ = edge(&origin, "POST", "/api/account/logout", None, Some(&token)).await;
+        });
+    }
     Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
 pub async fn api_me(state: State<'_, Api>) -> Result<Value, String> {
     let origin = base();
-    let token = state.session.token(&origin);
-    let me = match edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await {
-        Ok(v) => v,
-        Err(e) => {
-            if token.is_some() && e.starts_with("HTTP 401") && base() == origin {
-                state.session.clear();
-            }
-            return Err(e);
-        }
-    };
+    let credentials = state.session.credentials(&origin);
+    let me = state
+        .request(&origin, credentials.as_ref(), "GET", "/api/account/me", None, || true)
+        .await?;
     if base() != origin {
         return Err("读取账号期间线路已变化".into());
     }
-    if let Some(token) = state.session.token(&origin) {
-        state.session.set(&origin, token, me.clone());
+    if let Some(credentials) = credentials.as_ref() {
+        if !state
+            .session
+            .update_user_if_matches(&origin, credentials, me.clone())
+        {
+            return Err("登录状态已变化，请重试".into());
+        }
     }
     Ok(me)
 }
@@ -584,35 +617,88 @@ fn has_play_url(info: &Value) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
-#[tauri::command]
-pub async fn api_play(state: State<'_, Api>, id: i64, ep: u32) -> Result<Value, String> {
-    // 优先走新接口；失败或没有可用地址时再退回旧接口，两者都不行就返回新接口的结果/错误。
-    let primary = state
-        .post(&format!("/api/videos/{id}/episodes/{ep}/playback"), Some(json!({})))
-        .await
-        .map(|mut info| {
-            normalize_play_info(&mut info);
-            info
-        });
-    if let Ok(info) = &primary {
+fn playback_session_error(error: &str) -> bool {
+    matches!(error, SESSION_EXPIRED | SESSION_CHANGED | EDGE_CONTEXT_CHANGED)
+}
+
+async fn resolve_playback<F: std::future::Future<Output = Result<Value, String>>>(
+    mut primary: Result<Value, String>,
+    is_current: impl Fn() -> bool,
+    legacy: impl FnOnce() -> F,
+) -> Result<Value, String> {
+    if primary.as_ref().is_err_and(|error| playback_session_error(error)) {
+        return primary;
+    }
+    if !is_current() {
+        return Err(EDGE_CONTEXT_CHANGED.into());
+    }
+    if let Ok(info) = &mut primary {
+        normalize_play_info(info);
         if has_play_url(info) {
             return primary;
         }
     }
-    match state
-        .get(&format!("/api/videos/{id}/play?ep={ep}&page_texts=0"))
-        .await
-    {
-        Ok(mut legacy) => {
-            normalize_play_info(&mut legacy);
-            if has_play_url(&legacy) || primary.is_err() {
-                Ok(legacy)
+
+    let fallback = legacy().await;
+    if fallback.as_ref().is_err_and(|error| playback_session_error(error)) {
+        return fallback;
+    }
+    if !is_current() {
+        return Err(EDGE_CONTEXT_CHANGED.into());
+    }
+    match fallback {
+        Ok(mut info) => {
+            normalize_play_info(&mut info);
+            if has_play_url(&info) || primary.is_err() {
+                Ok(info)
             } else {
                 primary
             }
         }
         Err(_) => primary,
     }
+}
+
+async fn until_session_changes<F: std::future::Future<Output = Result<Value, String>>>(
+    mut revisions: tokio::sync::watch::Receiver<u64>,
+    revision: u64,
+    operation: F,
+) -> Result<Value, String> {
+    tokio::select! {
+        biased;
+        _ = revisions.wait_for(|current| *current != revision) => Err(EDGE_CONTEXT_CHANGED.into()),
+        result = operation => result,
+    }
+}
+
+#[tauri::command]
+pub async fn api_play(state: State<'_, Api>, id: i64, ep: u32) -> Result<Value, String> {
+    let revisions = state.session.revisions();
+    let origin = base();
+    let (revision, credentials) = state.session.snapshot(&origin);
+    let is_current = || base() == origin && state.session.matches_revision(revision);
+    if !is_current() {
+        return Err(EDGE_CONTEXT_CHANGED.into());
+    }
+    let primary_path = format!("/api/videos/{id}/episodes/{ep}/playback");
+    let legacy_path = format!("/api/videos/{id}/play?ep={ep}&page_texts=0");
+    until_session_changes(revisions, revision, async {
+        let primary = state
+            .request(
+                &origin,
+                credentials.as_ref(),
+                "POST",
+                &primary_path,
+                Some(json!({})),
+                is_current,
+            )
+            .await;
+        resolve_playback(primary, is_current, || {
+            state.request(&origin, credentials.as_ref(), "GET", &legacy_path, None, is_current)
+        })
+        .await
+    })
+    .await
 }
 
 /* ───────────────────────── 评论 / 互动 ───────────────────────── */
@@ -724,7 +810,166 @@ mod tests {
         category_api_path, has_play_url, is_newer, normalize_category_sort, normalize_play_info,
         validate_category_slug,
     };
+    use crate::net::EdgeError;
     use serde_json::{json, Value};
+
+    #[tokio::test]
+    async fn local_sign_out_cancels_pending_playback_before_remote_completion() {
+        use super::{until_session_changes, Api, EDGE_CONTEXT_CHANGED};
+        use tokio::sync::{oneshot, Notify};
+
+        let api = Api::new();
+        let origin = "https://huangguoai.com";
+        api.session.set(origin, "old-token".into(), json!({"id": 1}));
+        let revisions = api.session.revisions();
+        let (revision, _) = api.session.snapshot(origin);
+        let (waiting, started) = oneshot::channel();
+        let connection_ready = Notify::new();
+        let playback = until_session_changes(revisions, revision, async {
+            waiting.send(()).unwrap();
+            connection_ready.notified().await;
+            panic!("obsolete playback should not resume when the connection becomes ready");
+        });
+        let (result, ()) = tokio::join!(playback, async {
+            started.await.unwrap();
+            assert_eq!(api.session.take_token(origin).as_deref(), Some("old-token"));
+            assert!(api.session.credentials(origin).is_none());
+            connection_ready.notify_one();
+        });
+        assert_eq!(result, Err(EDGE_CONTEXT_CHANGED.into()));
+    }
+
+    #[tokio::test]
+    async fn playback_session_expiry_survives_its_own_invalidation_signal() {
+        use super::{until_session_changes, Api, SESSION_EXPIRED};
+
+        let api = Api::new();
+        let origin = "https://huangguoai.com";
+        api.session.set(origin, "expired-token".into(), json!({"id": 1}));
+        let revisions = api.session.revisions();
+        let (revision, credentials) = api.session.snapshot(origin);
+        let result = until_session_changes(revisions, revision, async {
+            tokio::task::yield_now().await;
+            Err(api.session_error(origin, &credentials.unwrap(), EdgeError::Unauthorized))
+        })
+        .await;
+        assert_eq!(result, Err(SESSION_EXPIRED.into()));
+        assert!(api.session.credentials(origin).is_none());
+    }
+
+    #[tokio::test]
+    async fn playback_fallback_preserves_session_expiry() {
+        use super::{resolve_playback, SESSION_CHANGED, SESSION_EXPIRED};
+        for error in [SESSION_EXPIRED, SESSION_CHANGED] {
+            let result = resolve_playback(Err(error.into()), || false, || async {
+                panic!("session failures must skip legacy playback")
+            })
+            .await;
+            assert_eq!(result, Err(error.into()));
+        }
+
+        let result = resolve_playback(Ok(json!({})), || true, || async { Err(SESSION_EXPIRED.into()) }).await;
+        assert_eq!(result, Err(SESSION_EXPIRED.into()));
+        let result = resolve_playback(Err("primary unavailable".into()), || true, || async {
+            Ok(json!({"streams": {"main": "https://fixture.invalid/video.m3u8"}}))
+        })
+        .await;
+        assert_eq!(result.unwrap()["video_url"], "https://fixture.invalid/video.m3u8");
+    }
+
+    #[tokio::test]
+    async fn playback_skips_or_discards_fallback_when_context_changes() {
+        use super::{resolve_playback, Api, EDGE_CONTEXT_CHANGED};
+        use std::cell::Cell;
+
+        let api = Api::new();
+        let origin = "https://huangguoai.com";
+        api.session.set(origin, "fixture".into(), json!({"id": 1}));
+        let (revision, _) = api.session.snapshot(origin);
+        let active_origin = Cell::new(origin);
+        let is_current = || active_origin.get() == origin && api.session.matches_revision(revision);
+
+        active_origin.set("https://huangguoai.ai");
+        let result = resolve_playback(Err("timeout".into()), is_current, || async {
+            panic!("a switched line must skip fallback")
+        })
+        .await;
+        assert_eq!(result, Err(EDGE_CONTEXT_CHANGED.into()));
+
+        active_origin.set(origin);
+        let result = resolve_playback(Err("timeout".into()), is_current, || async {
+            api.session.clear();
+            Ok(json!({"video_url": "https://fixture.invalid/legacy.m3u8"}))
+        })
+        .await;
+        assert_eq!(result, Err(EDGE_CONTEXT_CHANGED.into()));
+
+        // Session versions still change if the server reuses a token.
+        api.session.set(origin, "fixture".into(), json!({"id": 1}));
+        let result = resolve_playback(Err("timeout".into()), is_current, || async {
+            panic!("a replacement session must skip fallback")
+        })
+        .await;
+        assert_eq!(result, Err(EDGE_CONTEXT_CHANGED.into()));
+    }
+
+    #[test]
+    fn business_expiry_accepts_variants_without_matching_unrelated_text() {
+        let origin = "https://huangguoai.com";
+        let api = super::Api::new();
+        for message in [
+            "您的登录已过期，请重新登录",
+            "当前登录状态已过期；请重新登录。",
+            "请先登录后再试！",
+        ] {
+            api.session.set(origin, "fixture".into(), json!({"id": 1}));
+            let credentials = api.session.credentials(origin).unwrap();
+            assert_eq!(
+                api.session_error(origin, &credentials, EdgeError::Business(message.into())),
+                super::SESSION_EXPIRED
+            );
+            assert!(api.session.token(origin).is_none());
+        }
+        api.session.set(origin, "fixture".into(), json!({"id": 1}));
+        let credentials = api.session.credentials(origin).unwrap();
+        let quoted = "评论内容不能包含「登录已过期」";
+        assert_eq!(
+            api.session_error(origin, &credentials, EdgeError::Business(quoted.into())),
+            quoted
+        );
+        assert_eq!(api.session.token(origin).as_deref(), Some("fixture"));
+    }
+
+    #[test]
+    fn business_auth_errors_expire_only_the_request_session() {
+        let api = super::Api::new();
+        let origin = "https://huangguoai.com";
+        api.session.set(origin, "fixture".into(), json!({"id": 1}));
+        let old = api.session.credentials(origin).unwrap();
+        api.session.set(origin, "fixture".into(), json!({"id": 2}));
+        let current = api.session.credentials(origin).unwrap();
+
+        assert_eq!(
+            api.session_error(origin, &old, EdgeError::Business("请先登录".into())),
+            "登录状态已变化，请重试"
+        );
+        assert_eq!(
+            api.session_error(origin, &current, EdgeError::Business("操作失败".into())),
+            "操作失败"
+        );
+        for error in [
+            "HTTP 503: <html>登录已过期，请重新登录</html>",
+            "expected value at line 1 column 1: <html>登录已过期</html>",
+        ] {
+            assert_eq!(
+                api.session_error(origin, &current, EdgeError::Transport(error.into())),
+                error
+            );
+        }
+        assert_eq!(api.session.user(origin), json!({"id": 2}));
+        assert!(api.session_error(origin, &current, EdgeError::Business("登录已过期，请重新登录".into())).starts_with("HTTP 401"));
+        assert_eq!(api.session.token(origin), None);
+    }
 
     #[test]
     fn new_playback_streams_fill_legacy_url_fields() {

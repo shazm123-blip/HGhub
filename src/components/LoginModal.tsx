@@ -6,7 +6,7 @@ import { Modal, Sheet } from "./ui";
 import { IClose, IEye, IEyeOff, ILogin } from "../icons";
 
 export default function LoginModal() {
-  const { loginOpen, setLoginOpen, setLinePickerOpen, setUser, mergeUserInteractions, toast } = useStore();
+  const { loginOpen, setLoginOpen, setLinePickerOpen, prepareLogin, toast } = useStore();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -20,13 +20,13 @@ export default function LoginModal() {
     if (!username.trim() || !password) { setErr("请输入账号与密码"); return; }
     setBusy(true);
     setErr("");
+    const completeLogin = prepareLogin();
     try {
       const res = mode === "login"
         ? await api.login(username.trim(), password)
         : await api.register(username.trim(), password, email.trim());
       const nextUser = res.user as User;
-      setUser(nextUser);
-      mergeUserInteractions(nextUser);
+      completeLogin(nextUser);
       setPassword("");
       setLoginOpen(false);
       toast(mode === "login" ? `欢迎回来，${nextUser?.nickname || username}` : "注册成功", "ok");

@@ -165,15 +165,28 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
 
 const isHtml = (s: string) => /<(p|div|br|img|h[1-6]|ul|ol|li|blockquote|span|strong|em)\b/i.test(s);
 
+function validPostCounts(raw: Post["counts"]): NonNullable<Post["counts"]> {
+  const counts: NonNullable<Post["counts"]> = {};
+  for (const key of ["like", "collect", "comment", "share", "hot"] as const) {
+    const value = raw?.[key];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) counts[key] = value;
+  }
+  return counts;
+}
+
 /* ================= 吃瓜详情（网页式浏览） ================= */
 export function PostDetail({ id, onBack, active = true }: { id: number; onBack: () => void; active?: boolean }) {
-  const { toast, strictSecurity, muted, setMuted, volume, user, setUser, setLoginOpen, lineVersion } = useStore();
+  const { toast, strictSecurity, muted, setMuted, volume, user, isLiked, isFav, changeInteraction, setLoginOpen, lineVersion } = useStore();
   const [post, setPost] = useState<(Post & { content?: string; video_url?: string }) | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [play, setPlay] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
-  const [liked, setLiked] = useState(false);
-  const [collected, setCollected] = useState(false);
+  const [countsRetry, setCountsRetry] = useState(0);
+  const [countsStatus, setCountsStatus] = useState<"idle" | "refreshing" | "failed">("idle");
+  const liked = !!user && isLiked(id, true);
+  const collected = !!user && isFav(id, true);
+  const detailKey = JSON.stringify([lineVersion, id, reloadTick]);
+  const loadedDetailKey = useRef<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState("");
   const [comments, setComments] = useState<Comment[]>([]);
   const [cPage, setCPage] = useState(0);
@@ -209,16 +222,36 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
 
   useEffect(() => {
     let alive = true;
-    setErr(null);
-    setPost(null);
-    setPlay(false);
-    setLiked(false);
-    setCollected(false);
+    const refreshCounts = loadedDetailKey.current === detailKey;
+    if (refreshCounts) {
+      setCountsStatus("refreshing");
+    } else {
+      setCountsStatus("idle");
+      setErr(null);
+      setPost(null);
+      setPlay(false);
+    }
     api.post(id)
-      .then((p) => { if (alive) setPost(p); })
-      .catch((e) => { if (alive) setErr((e as Error).message || "加载失败"); });
+      .then((data) => {
+        if (!alive) return;
+        if (!data) throw new Error("加载失败");
+        const counts = validPostCounts(data.counts);
+        const complete = counts.like !== undefined && counts.collect !== undefined && counts.comment !== undefined;
+        setCountsStatus(complete ? "idle" : "failed");
+        if (refreshCounts) {
+          setPost(current => current ? { ...current, counts: { ...current.counts, ...counts } } : current);
+        } else {
+          loadedDetailKey.current = detailKey;
+          setPost({ ...data, counts });
+        }
+      })
+      .catch((e) => {
+        if (!alive) return;
+        if (refreshCounts) setCountsStatus("failed");
+        else setErr((e as Error).message || "加载失败");
+      });
     return () => { alive = false; };
-  }, [id, reloadTick, lineVersion]);
+  }, [id, detailKey, liked, collected, countsRetry]);
 
   const loadComments = async (p: number) => {
     const seq = ++cSeqRef.current;
@@ -250,34 +283,20 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, lineVersion]);
 
-  const togglePostLike = () => {
+  const togglePostInteraction = async (field: "likes" | "favs") => {
     if (!user) { setLoginOpen(true); return; }
-    const next = !liked;
-    setLiked(next);
-    toast(next ? "已点赞" : "已取消点赞", next ? "heart" : "info");
-    api.postLike(id, next).catch((e) => {
-      setLiked(!next);
-      const msg = (e as Error).message || "操作失败";
-      if (msg.includes("登录已过期")) { setUser(null); setLoginOpen(true); }
-      toast(msg, "info");
-    });
+    try {
+      const on = await changeInteraction(field, id, { post: true });
+      if (on === null || !mountedRef.current) return;
+      if (field === "likes") toast(on ? "已点赞" : "已取消点赞", on ? "heart" : "info");
+      else toast(on ? "已收藏" : "已取消收藏", on ? "star" : "info");
+    } catch (error) {
+      if (mountedRef.current) toast((error as Error).message || "操作失败，请重试", "info");
+    }
   };
 
-  const togglePostCollect = () => {
-    if (!user) { setLoginOpen(true); return; }
-    const next = !collected;
-    setCollected(next);
-    toast(next ? "已收藏" : "已取消收藏", next ? "star" : "info");
-    api.postCollect(id, next).catch((e) => {
-      setCollected(!next);
-      const msg = (e as Error).message || "操作失败";
-      if (msg.includes("登录已过期")) { setUser(null); setLoginOpen(true); }
-      toast(msg, "info");
-    });
-  };
-
-  const baseLike = post?.counts?.like || 0;
-  const baseCollect = post?.counts?.collect || 0;
+  const likeCount = post?.counts?.like;
+  const collectCount = post?.counts?.collect;
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
@@ -357,23 +376,33 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
 
               {/* 互动栏 */}
               <div className="flex items-center gap-3 mt-6 pt-4 border-t border-s3">
-                <button type="button" onClick={togglePostLike} aria-pressed={liked}
+                <button type="button" onClick={() => void togglePostInteraction("likes")} aria-pressed={liked}
                   className={`flex items-center gap-1.5 px-4 h-9 rounded-full text-[12.5px] font-semibold pressable ${liked ? "bg-neon/15 text-neon" : "bg-s3 text-on/85"}`}>
                   {liked ? <IHeartF size={15} /> : <IHeart size={15} />}
-                  <span>点赞 {fmt(baseLike + (liked ? 1 : 0))}</span>
+                  <span>点赞 {likeCount === undefined ? "—" : fmt(likeCount)}</span>
                 </button>
-                <button type="button" onClick={togglePostCollect} aria-pressed={collected}
+                <button type="button" onClick={() => void togglePostInteraction("favs")} aria-pressed={collected}
                   className={`flex items-center gap-1.5 px-4 h-9 rounded-full text-[12.5px] font-semibold pressable ${collected ? "bg-amber/15 text-amber" : "bg-s3 text-on/85"}`}>
                   {collected ? <IStarF size={15} /> : <IStar size={15} />}
-                  <span>收藏 {fmt(baseCollect + (collected ? 1 : 0))}</span>
+                  <span>收藏 {collectCount === undefined ? "—" : fmt(collectCount)}</span>
                 </button>
               </div>
+
+              {countsStatus !== "idle" && (
+                <div role="status" className="mt-2 flex items-center gap-2 text-[11.5px] text-mut">
+                  {countsStatus === "refreshing" ? "正在刷新计数…" : "计数未能全部更新"}
+                  {countsStatus === "failed" && (
+                    <button type="button" onClick={() => setCountsRetry((n) => n + 1)}
+                      className="text-primary pressable">重试刷新计数</button>
+                  )}
+                </div>
+              )}
 
               {/* 评论区 */}
               <div className="mt-6 pt-4 border-t border-s3">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[14px] font-bold text-on">评论</span>
-                  {!!post.counts?.comment && <span className="text-[11.5px] text-mut">{fmt(post.counts.comment)}</span>}
+                  <span className="text-[11.5px] text-mut">{post.counts?.comment === undefined ? "—" : fmt(post.counts.comment)}</span>
                 </div>
                 {comments.length ? (
                   <>

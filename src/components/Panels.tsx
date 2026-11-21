@@ -71,7 +71,7 @@ export function EpisodesPanel({ videoId, episodes, current, onPick, onClose, bar
 export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
   videoId: number; ep: number; total: number; kind?: "video" | "post"; onClose: () => void;
 }) {
-  const { user, setUser, setLoginOpen, toast } = useStore();
+  const { user, handleSessionError, setLoginOpen, toast } = useStore();
   const [items, setItems] = useState<Comment[]>([]);
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
@@ -143,10 +143,7 @@ export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
       void load(1);
     } catch (e) {
       const msg = (e as Error).message || "评论失败";
-      if (msg.includes("登录已过期")) {
-        setUser(null);
-        setLoginOpen(true);
-      }
+      handleSessionError(e);
       toast(msg, "info");
     } finally {
       if (mounted.current) setSending(false);

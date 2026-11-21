@@ -18,7 +18,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
   const {
     user, setLoginOpen, logout, history, favs, likes, follows, followAuthors,
     videoSnapshots, upsertVideoSnapshot, getVideoOrientation,
-    removeFav, removeHistory, removeLike, toggleFollowLocal, clearHistory, push, lineVersion, toast,
+    changeInteraction, removeHistory, clearHistory, push, lineVersion, toast,
   } = useStore();
   const [tab, setTab] = useState<"fav" | "history" | "like" | "follow">("fav");
   const [limit, setLimit] = useState(12);
@@ -105,19 +105,23 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
     });
   }, [visibleIds, fetched, lineVersion, videoSnapshots]);
 
+  const confirmRemoval = async (remove: () => Promise<boolean | null>, message: string) => {
+    try {
+      if (await remove() !== null) toast(message, "info");
+    } catch (error) {
+      toast((error as Error).message || "操作失败，请重试", "info");
+    }
+  };
+
   const removeItem = (id: number) => {
     if (tab === "fav") {
-      removeFav(id);
-      if (user) api.collect(id, false).catch(() => {});
-      toast("已移出收藏", "info");
+      void confirmRemoval(() => changeInteraction("favs", id, { remove: true }), "已移出收藏");
     } else if (tab === "history") {
       removeHistory(id);
       toast("已删除该观看记录", "info");
     } else if (tab === "like") {
       const ep = history.find((h) => h.id === id)?.ep || 1;
-      removeLike(id);
-      if (user) api.like(id, ep, false).catch(() => {});
-      toast("已取消喜欢", "info");
+      void confirmRemoval(() => changeInteraction("likes", id, { ep, remove: true }), "已取消喜欢");
     }
   };
 
@@ -206,11 +210,9 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
                         <div className="text-[10.5px] text-dim">ID {uid}</div>
                       </div>
                       <button type="button"
-                        onClick={() => {
-                          toggleFollowLocal(uid);
-                          if (user) api.follow(uid, false).catch(() => {});
-                          toast(`已取消关注 ${name}`, "info");
-                        }}
+                        onClick={() => void confirmRemoval(
+                          () => changeInteraction("follows", uid, { remove: true }), `已取消关注 ${name}`,
+                        )}
                         className="shrink-0 px-3 h-7 rounded-full bg-s3 text-[11.5px] text-mut pressable">
                         取消关注
                       </button>

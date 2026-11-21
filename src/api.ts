@@ -59,7 +59,19 @@ export const playlist = (url: string) => `${LOCAL}/hls?u=${encodeURIComponent(ur
 /** 写一行到应用数据目录 debug.log（用户反馈「打不开」时要的就是它） */
 export const logLine = (msg: string) => invoke("debug_log", { msg }).catch(() => {});
 
+export const SESSION_EXPIRED_MESSAGE = "登录已过期，请重新登录";
+
+let sessionExpiryObserver: ((error: Error) => void) | undefined;
+
+export function observeSessionExpiry(observer: (error: Error) => void) {
+  sessionExpiryObserver = observer;
+  return () => {
+    if (sessionExpiryObserver === observer) sessionExpiryObserver = undefined;
+  };
+}
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const onSessionExpiry = sessionExpiryObserver;
   try {
     return (await invoke(cmd, args)) as T;
   } catch (e) {
@@ -68,7 +80,9 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     logLine(`[api] ${cmd} → ${msg}`);
     const status = /^HTTP (\d{3})\b/.exec(msg)?.[1];
     if (status === "401") {
-      throw new Error("登录已过期，请重新登录");
+      const error = new Error(SESSION_EXPIRED_MESSAGE);
+      if (msg === "HTTP 401 登录已过期") onSessionExpiry?.(error);
+      throw error;
     }
     if (status === "410") {
       throw new Error("该频道或内容已下线");
@@ -182,7 +196,7 @@ export function friendlyError(raw: string): { summary: string; detail?: string }
   const s = (raw || "").trim();
   if (!s) return { summary: "加载失败，请稍后重试或切换线路" };
   const lower = s.toLowerCase();
-  if (s.includes("登录已过期")) return { summary: "登录态已失效，请重新登录" };
+  if (s === SESSION_EXPIRED_MESSAGE || s === "请先登录") return { summary: "登录态已失效，请重新登录" };
   if (s.includes("已下线") || /\b410\b/.test(s)) return { summary: "该内容或频道已下线", detail: s };
   if (/\b404\b/.test(s)) return { summary: "内容不存在或线路接口异常", detail: s };
   if (/\b403\b/.test(s)) return { summary: "资源访问被拒绝或签名已过期，请尝试重新加载", detail: s };

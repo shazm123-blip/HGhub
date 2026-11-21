@@ -41,29 +41,33 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
     if (active && !isMobile) inputRef.current?.focus();
   }, [active]);
 
-  const loadRecommendations = useCallback(async (force = false) => {
-    if (recLoading) return;
-    if (!force && recLoadedLineRef.current === lineVersion && recPool.length > 0) return;
-    recLoadedLineRef.current = lineVersion;
+  const recRequestRef = useRef<{ line: number } | null>(null);
+  const currentLineRef = useRef(lineVersion);
+  currentLineRef.current = lineVersion;
+
+  const loadRecommendations = useCallback(async () => {
+    if (recRequestRef.current?.line === lineVersion) return;
+    const request = { line: lineVersion };
+    recRequestRef.current = request;
     setRecLoading(true);
     try {
       const res = await api.rank("recommend");
-      if (!mounted.current) return;
-      const list = res?.items || [];
-      setRecPool(list);
+      if (!mounted.current || currentLineRef.current !== lineVersion) return;
+      recLoadedLineRef.current = lineVersion;
+      setRecPool(res?.items || []);
       setRecOffset(0);
     } catch {
-      /* 推荐位静默降级，允许下次激活重试 */
-      recLoadedLineRef.current = -1;
+      // Retry on the next activation or when the user asks for another batch.
     } finally {
-      if (mounted.current) setRecLoading(false);
+      if (recRequestRef.current === request) {
+        recRequestRef.current = null;
+        if (mounted.current) setRecLoading(false);
+      }
     }
-  }, [lineVersion, recLoading, recPool.length]);
+  }, [lineVersion]);
 
   useEffect(() => {
-    if (active && recLoadedLineRef.current !== lineVersion) {
-      void loadRecommendations(true);
-    }
+    if (active && recLoadedLineRef.current !== lineVersion) void loadRecommendations();
   }, [active, lineVersion, loadRecommendations]);
 
   const run = useCallback(async (keyword: string, p: number) => {
@@ -224,7 +228,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
               <button
                 onClick={() => {
                   if (recPool.length > 6) setRecOffset((n) => (n + 6) % recPool.length);
-                  else void loadRecommendations(true);
+                  else void loadRecommendations();
                 }}
                 disabled={recLoading}
                 className="flex items-center gap-1 text-[11.5px] text-mut hover:text-primary pressable disabled:opacity-60">

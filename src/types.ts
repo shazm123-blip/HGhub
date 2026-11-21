@@ -113,7 +113,7 @@ export type Post = {
   video_url?: string;
   video_id?: number;
   author?: { id: number; name: string; avatar?: string; is_following?: boolean };
-  counts?: { like: number; comment: number; collect: number; share?: number; hot?: number };
+  counts?: { like?: number; comment?: number; collect?: number; share?: number; hot?: number };
   created_at?: string;
   publish_time?: string;
 };

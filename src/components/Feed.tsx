@@ -93,7 +93,7 @@ type Props = {
 
 export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind = "video", active, bottomInset, onBack, onNearEnd, onView, startEp, startTime, initialCovers }: Props) {
   const store = useStore();
-  const { isLiked, isFav, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, muted, setMuted, volume, setVolume, toast, addHistory, user } = store;
+  const { isLiked, isFav, changeInteraction, muted, setMuted, volume, setVolume, toast, addHistory } = store;
   const isDesktop = !isMobile;
 
   const boxRef = useRef<HTMLDivElement>(null);
@@ -136,6 +136,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     startTime && startTime > 1 ? { key: `${videoIds[startIndex]}:${startEp || 1}`, t: startTime } : null,
   );
   /* 观看进度：onTime 里节流写回 store，卸载时再兜一次 */
+  const hasLiveProgress = useRef(false);
   const liveRef = useRef({ id: 0, ep: 1, dur: 0, t: 0 });
   const lastSaveRef = useRef(0);
   const theater = store.theater;
@@ -217,6 +218,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const detail = details[curId];
   const curEp = epMap[curId] || 1;
   const playKey = `${curId}:${curEp}`;
+  const activePlayKey = useRef(playKey);
+  activePlayKey.current = playKey;
   const episodes = detail?.episodes || [];
   const post = posts[curId];
   const playUrl = kind === "post" ? (post?.video_url || "") : (playUrls[playKey] || "");
@@ -244,24 +247,31 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (active && curId) onView?.(curId);
   }, [active, curId, onView]);
 
-  const saveLiveProgress = useCallback(() => {
+  const saveLiveProgress = useCallback((immediate = false) => {
     const s = liveRef.current;
-    if (s.id && s.dur > 0) {
+    if (hasLiveProgress.current && `${s.id}:${s.ep}` === activePlayKey.current && s.dur > 0) {
       lastSaveRef.current = Date.now();
-      addHistory(s.id, s.ep, s.t, s.dur);
+      addHistory(s.id, s.ep, s.t, s.dur, immediate);
     }
   }, [addHistory]);
 
   useEffect(() => {
+    if (!active) return;
     const onVis = () => {
-      if (document.visibilityState === "hidden") saveLiveProgress();
+      if (document.visibilityState === "hidden") saveLiveProgress(true);
     };
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [saveLiveProgress]);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      saveLiveProgress();
+      hasLiveProgress.current = false;
+    };
+  }, [active, saveLiveProgress]);
 
   /* 观看进度：写进独立进度总线避免 Feed 重渲染，每 20 秒落一次历史并在暂停/退后台时立刻落盘 */
   const onTimeTick = (t: number) => {
+    if (!activeRef.current || playKey !== activePlayKey.current) return;
+    hasLiveProgress.current = true;
     liveRef.current = { id: curId, ep: curEp, dur: duration, t };
     if (!barScrub.current && gesture.current?.mode !== "scrub") {
       progressBus.update({ time: t });
@@ -278,9 +288,12 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
   /* 拿到时长后再续播：只对进入时那一条生效，且不跳到片尾 */
   const onDurationTick = (d: number) => {
+    if (playKey !== activePlayKey.current) return;
     setDuration(d);
     progressBus.update({ duration: d });
-    liveRef.current = { ...liveRef.current, dur: d };
+    if (liveRef.current.id === curId && liveRef.current.ep === curEp) {
+      liveRef.current = { ...liveRef.current, dur: d };
+    }
     const r = resumeRef.current;
     if (r && r.key === playKey && r.t > 1 && (!d || r.t < d - 3)) {
       resumeRef.current = null;
@@ -416,6 +429,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
   const goPrevEp = useCallback(() => {
     if (!prevEp) return false;
+    saveLiveProgress();
     cancelKeepPlaying();
     setEndedOverlay(false);
     setEpMap((m) => ({ ...m, [curId]: prevEp.ep_num }));
@@ -423,10 +437,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     setFsEpOpen(false);
     toast(`第 ${prevEp.ep_num} 集`, "info");
     return true;
-  }, [prevEp, curId, cancelKeepPlaying, toast]);
+  }, [prevEp, curId, cancelKeepPlaying, saveLiveProgress, toast]);
 
   const goNextEp = useCallback((prefix = "") => {
     if (!nextEp) return false;
+    saveLiveProgress();
     cancelKeepPlaying();
     setEndedOverlay(false);
     setEpMap((m) => ({ ...m, [curId]: nextEp.ep_num }));
@@ -434,7 +449,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     setFsEpOpen(false);
     toast(`${prefix}第 ${nextEp.ep_num} 集`, "info");
     return true;
-  }, [nextEp, curId, cancelKeepPlaying, toast]);
+  }, [nextEp, curId, cancelKeepPlaying, saveLiveProgress, toast]);
   const keepPlayingThroughTransition = useCallback(() => {
     cancelKeepPlaying();
     const el = videoRef.current?.el();
@@ -542,11 +557,17 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   }, [videoIds.length, onNearEnd, activeFs]);
 
   const go = useCallback((delta: number) => {
-    const el = boxRef.current;
-    if (!el) return;
     const next = Math.max(0, Math.min(videoIds.length - 1, safeIndex + delta));
-    el.scrollTo({ top: next * el.clientHeight, behavior: "smooth" });
-  }, [safeIndex, videoIds.length]);
+    if (next === safeIndex) return;
+    if (activeFs) {
+      saveLiveProgress();
+      setIndex(next);
+      if (next >= videoIds.length - 3) onNearEnd?.();
+      return;
+    }
+    const el = boxRef.current;
+    el?.scrollTo({ top: next * el.clientHeight, behavior: "smooth" });
+  }, [activeFs, safeIndex, videoIds.length, onNearEnd, saveLiveProgress]);
 
   /* 初始定位 */
   useEffect(() => {
@@ -656,12 +677,15 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         if (!alive) return;
         if (!info?.video_url) throw new Error("暂无播放地址");
         setPlayUrls((m) => prunePlayMap({ ...m, [playKey]: info.video_url }, keepIdsRef.current));
-        addHistory(curId, curEp);
       })
       .catch((e) => { if (alive) setErr((e as Error).message || "取播放地址失败"); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, curId, curEp, playTry]);
+
+  useEffect(() => {
+    if (kind === "video" && curId && playUrl && activeRef.current) addHistory(curId, curEp);
+  }, [kind, curId, curEp, playUrl, addHistory]);
 
   const reloadPlaySource = () => {
     setErr("");
@@ -709,13 +733,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     }
     setWaiting(false);
   }, [active, curId, curEp, playKey]);
-
-  /* 离开播放页时把最后位置落盘 */
-  useEffect(() => () => {
-    const s = liveRef.current;
-    if (s.id && s.dur) addHistory(s.id, s.ep, s.t, s.dur);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /* 返回键 / Escape：先关全屏选集抽屉，再关底部/侧边面板 */
   useEffect(() => {
@@ -1213,40 +1230,30 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     } catch { toast("画中画开启失败", "info"); }
   };
 
-  const handleAuthSyncError = (e: unknown) => {
-    if (String((e as Error)?.message || "").includes("登录已过期")) {
-      store.setUser(null);
-      toast("登录已过期，请重新登录", "info");
-    }
-  };
+  const interactionError = (e: unknown) => toast((e as Error).message || "操作失败，请重试", "info");
 
   const onLike = () => {
     if (!curId) return;
-    const on = toggleLikeLocal(curId);
-    setHeartBurst((n) => n + 1);
-    toast(on ? "已加入喜欢" : "已取消喜欢", on ? "heart" : "info");
-    if (user) {
-      const req = kind === "post" ? api.postLike(curId, on) : api.like(curId, curEp, on);
-      req.catch(handleAuthSyncError);
-    }
+    void changeInteraction("likes", curId, { ep: curEp, post: kind === "post" }).then((on) => {
+      if (on === null) return;
+      if (on) setHeartBurst((n) => n + 1);
+      toast(on ? "已加入喜欢" : "已取消喜欢", on ? "heart" : "info");
+    }).catch(interactionError);
   };
 
   const onFav = () => {
     if (!curId) return;
-    const on = toggleFavLocal(curId);
-    toast(on ? "已收藏" : "已取消收藏", on ? "star" : "info");
-    if (user) {
-      const req = kind === "post" ? api.postCollect(curId, on) : api.collect(curId, on);
-      req.catch(handleAuthSyncError);
-    }
+    void changeInteraction("favs", curId, { post: kind === "post" }).then((on) => {
+      if (on !== null) toast(on ? "已收藏" : "已取消收藏", on ? "star" : "info");
+    }).catch(interactionError);
   };
 
   const onFollow = () => {
-    const uid = meta.authorId > 0 ? meta.authorId : undefined;
-    if (!uid) return;
-    const on = toggleFollowLocal(uid, { name: meta.author, avatar: detail?.author?.avatar });
-    toast(on ? `已关注 ${detail?.author?.name || meta.author}` : "已取消关注", on ? "ok" : "info");
-    if (user) api.follow(uid, on).catch(handleAuthSyncError);
+    const uid = meta.authorId;
+    if (uid <= 0) return;
+    void changeInteraction("follows", uid, { author: { name: meta.author, avatar: detail?.author?.avatar } }).then((on) => {
+      if (on !== null) toast(on ? `已关注 ${detail?.author?.name || meta.author}` : "已取消关注", on ? "ok" : "info");
+    }).catch(interactionError);
   };
 
   const keyStateRef = useRef({ go, goPrevEp, goNextEp, toggleFull, onLike, onFav, panel });
@@ -1284,18 +1291,20 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   }, [active, controlsLocked, setTheater, setMuted]);
 
   const pickEp = (ep: number) => {
+    if (ep !== curEp) saveLiveProgress();
     setEndedOverlay(false);
     setEpMap((m) => ({ ...m, [curId]: ep }));
     setPanel(null);
     setFsEpOpen(false);
   };
 
+  const liked = isLiked(curId, kind === "post");
+  const favorited = isFav(curId, kind === "post");
   const likeCount = useMemo(() => {
     const serverLiked = !!detail?.interaction?.liked;
-    const localLiked = isLiked(curId);
-    const delta = (localLiked ? 1 : 0) - (serverLiked ? 1 : 0);
+    const delta = (liked ? 1 : 0) - (serverLiked ? 1 : 0);
     return Math.max(0, meta.like + delta);
-  }, [meta.like, curId, isLiked, detail?.interaction?.liked]);
+  }, [meta.like, liked, detail?.interaction?.liked]);
 
   if (!videoIds.length) {
     return <div className="absolute inset-0 bg-black flex items-center justify-center"><div className="w-9 h-9 spinner" /></div>;
@@ -1393,6 +1402,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                     onPointerCancel={(e) => onUp(e, true)}
                     onLostPointerCapture={(e) => { if (e.pointerType === "mouse" && gesture.current && gesture.current.mode !== "idle") onUp(e, true); }}>
                     <VideoSurface
+                      key={playKey}
                       ref={videoRef}
                       src={playUrl}
                       poster={activeFs ? undefined : posterUrl}
@@ -1425,7 +1435,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                           }
                         }
                       }}
-                      onPause={() => { saveLiveProgress(); setPaused(true); }}
+                      onPause={() => { if (activeRef.current) saveLiveProgress(); setPaused(true); }}
                       onWaiting={() => setWaiting(true)}
                       onEnded={() => {
                         if (nextEp) goNextEp("即将播放 ");
@@ -1722,15 +1732,15 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                 <div className="absolute right-3 z-20 flex flex-col items-center gap-3.5"
                   style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 96}px)` }}>
                   {kind === "video" && (
-                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)} aria-label="喜欢">
+                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={liked} aria-label="喜欢">
                       <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
-                        {isLiked(curId) ? <IHeartF size={28} className="text-neon" /> : <IHeart size={28} className="hg-ink hg-ov-shadow" />}
+                        {liked ? <IHeartF size={28} className="text-neon" /> : <IHeart size={28} className="hg-ink hg-ov-shadow" />}
                       </span>
                       <span className="text-[10.5px] hg-ink-2 hg-ov-shadow tabular-nums">{likeCount > 0 ? fmt(likeCount) : "喜欢"}</span>
                     </button>
                   )}
-                  <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={isFav(curId)} aria-label="收藏">
-                    {isFav(curId) ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
+                  <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={favorited} aria-label="收藏">
+                    {favorited ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">收藏</span>
                   </button>
                   <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label="评论">
@@ -1763,9 +1773,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
                 {kind === "video" && (
                   <>
-                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={isLiked(curId)}>
+                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={liked}>
                       <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
-                        {isLiked(curId) ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
+                        {liked ? <IHeartF size={30} className="text-neon" /> : <IHeart size={30} className="text-white tsh" />}
                       </span>
                       <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(likeCount)}</span>
                     </button>
@@ -1775,8 +1785,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(meta.comment)}</span>
                     </button>
 
-                    <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={isFav(curId)}>
-                      {isFav(curId) ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
+                    <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={favorited}>
+                      {favorited ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
                       <span className="text-[10.5px] text-white/90 tabular-nums">{fmt(meta.collect)}</span>
                     </button>
 

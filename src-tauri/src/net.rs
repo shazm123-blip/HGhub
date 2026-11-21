@@ -86,13 +86,17 @@ pub fn bind_base(dir: &std::path::Path) {
 }
 
 /// 切换线路并落盘，返回规整后的地址。
-pub fn set_base(url: &str) -> Result<String, String> {
+pub fn set_base(url: &str, on_change: impl FnOnce()) -> Result<String, String> {
     let next = normalize_base(url)
         .ok_or_else(|| "线路地址无效（需要纯 HTTPS 站点地址，禁止内网）".to_string())?;
-    let previous = base();
-    if let Ok(mut cur) = BASE.write() {
-        *cur = next.clone();
-    }
+    let previous = {
+        let mut cur = BASE.write().map_err(|_| "线路状态锁失败")?;
+        let previous = std::mem::replace(&mut *cur, next.clone());
+        if previous != next {
+            on_change();
+        }
+        previous
+    };
     if let Some(path) = BASE_FILE.read().ok().and_then(|p| p.clone()) {
         let temp = path.with_extension("json.tmp");
         let _ = std::fs::write(&temp, json!({ "base": next }).to_string())
@@ -122,13 +126,8 @@ fn proxy_override() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 按**当前**系统代理设置新建一个客户端。
-///
-/// 注意：reqwest 的 `system-proxy` 只在构建时读一次注册表 / 环境变量。代理软件被关掉后，
-/// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，症状是满屏 `tunnel error: failed to create
-/// underlying connection`（浏览器却是通的，因为它每次都重读系统代理）。所以这里允许重建。
-fn build_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+fn client_builder(use_pool: bool) -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder()
         .user_agent(UA)
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
@@ -137,6 +136,21 @@ fn build_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, Str
         .gzip(true)
         .brotli(true)
         .pool_idle_timeout(Duration::from_secs(60));
+    if use_pool {
+        builder
+    } else {
+        // 播放取地址每次发送都要经过会话检查，禁用库内复用连接及重试。
+        builder.pool_max_idle_per_host(0).retry(reqwest::retry::never())
+    }
+}
+
+/// 按**当前**系统代理设置新建一个客户端。
+///
+/// 注意：reqwest 的 `system-proxy` 只在构建时读一次注册表 / 环境变量。代理软件被关掉后，
+/// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，症状是满屏 `tunnel error: failed to create
+/// underlying connection`（浏览器却是通的，因为它每次都重读系统代理）。所以这里允许重建。
+fn build_client(host: &str, addrs: &[SocketAddr], use_pool: bool) -> Result<reqwest::Client, String> {
+    let mut builder = client_builder(use_pool);
     if !addrs.is_empty() {
         builder = builder.resolve_to_addrs(host, addrs);
     }
@@ -163,12 +177,12 @@ fn cached_client(cache: &ClientCache, key: &str, now: Instant) -> Option<Arc<req
 
 /// 缓存按模式、主机和端口隔离；有效期内仅复用已经检查并固定地址的客户端。
 /// 到期后重新检查全部 DNS 答案，不使用旧连接绕过新的目标检查。
-async fn client_for(raw: &str) -> Result<(url::Url, Arc<reqwest::Client>), String> {
+async fn client_for(raw: &str, use_pool: bool) -> Result<(url::Url, Arc<reqwest::Client>), String> {
     let strict = network_policy::strict_security();
     let target = network_policy::parse_target_with_mode(raw, strict)?;
     let host = target.host_str().ok_or("目标缺少主机名")?;
     let port = target.port_or_known_default().ok_or("目标端口无效")?;
-    let key = format!("{strict}:{host}:{port}");
+    let key = format!("{strict}:{host}:{port}:{use_pool}");
     {
         let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
         if let Some(http) = cached_client(&cache, &key, Instant::now()) {
@@ -182,7 +196,7 @@ async fn client_for(raw: &str) -> Result<(url::Url, Arc<reqwest::Client>), Strin
     } else {
         Vec::new()
     };
-    let http = Arc::new(build_client(host, &addrs)?);
+    let http = Arc::new(build_client(host, &addrs, use_pool)?);
     let now = Instant::now();
     let mut cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
     // 同时到达的请求可能已完成解析；不延长已有结果的有效期。
@@ -218,7 +232,7 @@ pub async fn get(
         let mut next = network_policy::parse_target(raw).map_err(|e| policy_error("parse", e))?;
         for hop in 0..=5 {
             let resolving = Instant::now();
-            let (target, http) = client_for(next.as_str()).await.map_err(|e| policy_error("dns_or_client", e))?;
+            let (target, http) = client_for(next.as_str(), true).await.map_err(|e| policy_error("dns_or_client", e))?;
             crate::playback_log::record("network.target_ready", json!({"resource": crate::playback_log::resource_id(raw), "target_resource": crate::playback_log::resource_id(target.as_str()), "dns_or_client_ms": resolving.elapsed().as_millis() as u64, "hop": hop}));
             let mut request = http.get(target.clone()).timeout(timeout);
             if let Some(value) = accept {
@@ -425,7 +439,7 @@ pub async fn diagnose() -> Value {
 }
 
 fn retryable_error(error: &str) -> bool {
-    if error == "401" {
+    if matches!(error, "401" | EDGE_CONTEXT_CHANGED) {
         return false;
     }
     if let Some(status) = error
@@ -447,7 +461,11 @@ fn retryable_error(error: &str) -> bool {
 /// 只重试可能恢复的错误；404/权限错误/安全拒绝直接结束，避免无效等待。
 /// 站点偶发 TLS 抖动；碰上代理隧道错误就先重建客户端再试
 /// （代理软件开关后旧客户端会一直卡在 tunnel error 上）。
-async fn with_retry<F, Fut, T>(retry: bool, mut f: F) -> Result<T, String>
+async fn with_retry<F, Fut, T>(
+    retry: bool,
+    is_current: impl Fn() -> bool,
+    mut f: F,
+) -> Result<T, String>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, String>>,
@@ -455,6 +473,7 @@ where
     let mut last = String::from("network error");
     let attempts = if retry { 3 } else { 1 };
     for attempt in 0..attempts {
+        require_current(&is_current)?;
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -462,6 +481,7 @@ where
                 if !retryable_error(&last) {
                     return Err(last);
                 }
+                require_current(&is_current)?;
                 heal_client(&last);
                 if attempt + 1 < attempts {
                     tokio::time::sleep(Duration::from_millis(350 * (attempt as u64 + 1))).await;
@@ -511,6 +531,81 @@ fn edge_redirect_target(
     network_policy::redirect_target(current, location)
 }
 
+const EDGE_UNAUTHORIZED: &str = "HTTP 401: 登录已过期，请重新登录";
+pub const EDGE_CONTEXT_CHANGED: &str = "线路或登录状态已变化，请重试";
+
+fn require_current(is_current: impl FnOnce() -> bool) -> Result<(), String> {
+    if is_current() {
+        Ok(())
+    } else {
+        Err(EDGE_CONTEXT_CHANGED.into())
+    }
+}
+
+#[derive(Debug)]
+pub enum EdgeError {
+    Unauthorized,
+    ContextChanged,
+    Business(String),
+    Transport(String),
+}
+
+impl From<EdgeError> for String {
+    fn from(error: EdgeError) -> Self {
+        match error {
+            EdgeError::Unauthorized => EDGE_UNAUTHORIZED.into(),
+            EdgeError::ContextChanged => EDGE_CONTEXT_CHANGED.into(),
+            // 业务文案不能伪装成前端识别的 HTTP 状态。
+            EdgeError::Business(message) if message.trim_start().starts_with("HTTP ") => {
+                format!("接口返回失败：{message}")
+            }
+            EdgeError::Business(message) | EdgeError::Transport(message) => message,
+        }
+    }
+}
+
+fn decode_edge_body(status: reqwest::StatusCode, text: &str) -> Result<Value, String> {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(EDGE_UNAUTHORIZED.into());
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "HTTP {status}: {}",
+            text.chars().take(160).collect::<String>()
+        ));
+    }
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(text)
+        .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()))
+}
+
+fn classify_edge_transport(error: String) -> EdgeError {
+    match error.as_str() {
+        EDGE_UNAUTHORIZED => EdgeError::Unauthorized,
+        EDGE_CONTEXT_CHANGED => EdgeError::ContextChanged,
+        _ => EdgeError::Transport(error),
+    }
+}
+
+fn unpack_edge_response(value: Value) -> Result<Value, EdgeError> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    if value.get("status").and_then(|v| v.as_i64()) == Some(1) {
+        return Ok(value.get("data").cloned().unwrap_or(Value::Null));
+    }
+    Err(EdgeError::Business(
+        value
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("接口返回失败")
+            .to_string(),
+    ))
+}
+
 /// 业务请求：走边缘信封。
 pub async fn edge(
     origin: &str,
@@ -518,8 +613,20 @@ pub async fn edge(
     path: &str,
     body: Option<Value>,
     token: Option<&str>,
-) -> Result<Value, String> {
-    let cur = normalize_base(origin).ok_or("业务请求必须使用安全 HTTPS 线路")?;
+) -> Result<Value, EdgeError> {
+    edge_while(origin, method, path, body, token, || true).await
+}
+
+pub async fn edge_while(
+    origin: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    token: Option<&str>,
+    is_current: impl Fn() -> bool + Sync,
+) -> Result<Value, EdgeError> {
+    let cur = normalize_base(origin)
+        .ok_or_else(|| EdgeError::Transport("业务请求必须使用安全 HTTPS 线路".into()))?;
     if network_policy::strict_security()
         && (token.is_some()
             || matches!(
@@ -528,11 +635,11 @@ pub async fn edge(
             ))
         && !trusted_auth_origin(&cur)
     {
-        return Err("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into());
+        return Err(EdgeError::Transport("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into()));
     }
     let (encoded, ctype) = match &body {
         Some(v) => (
-            B64.encode(serde_json::to_vec(v).map_err(|e| e.to_string())?),
+            B64.encode(serde_json::to_vec(v).map_err(|e| EdgeError::Transport(e.to_string()))?),
             "application/json",
         ),
         None => (String::new(), ""),
@@ -561,7 +668,8 @@ pub async fn edge(
     // 取播放地址的 POST 没有副作用，和 GET 一样允许重试
     let can_retry = (method.eq_ignore_ascii_case("GET") && body.is_none())
         || (method.eq_ignore_ascii_case("POST") && operation == "play");
-    let value = with_retry(can_retry, || {
+    let value = with_retry(can_retry, &is_current, || {
+        let is_current = &is_current;
         attempt += 1;
         let attempt = attempt;
         let envelope = envelope.clone();
@@ -580,7 +688,7 @@ pub async fn edge(
             let result = async {
                 let mut next = network_policy::parse_target(&url)?;
                 for hop in 0..=5 {
-                    let (target, client) = client_for(next.as_str()).await?;
+                    let (target, client) = client_for(next.as_str(), operation != "play").await?;
                     target_host = target.host_str().unwrap_or("").to_string();
                     let mut req = client
                         .post(target.clone())
@@ -592,6 +700,7 @@ pub async fn edge(
                             req = req.header("Authorization", format!("Bearer {t}"));
                         }
                     }
+                    require_current(is_current)?;
                     let resp = req.send().await.map_err(|e| err_text(&e))?;
                     let status = resp.status();
                     status_code = Some(status.as_u16());
@@ -612,21 +721,11 @@ pub async fn edge(
                         next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
                         continue;
                     }
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        return decode_edge_body(status, "");
+                    }
                     let text = read_text_limited(resp, MAX_API_BYTES).await?;
-                    if status.as_u16() == 401 {
-                        return Err("HTTP 401: 登录已过期，请重新登录".to_string());
-                    }
-                    if !status.is_success() {
-                        return Err(format!(
-                            "HTTP {status}: {}",
-                            text.chars().take(160).collect::<String>()
-                        ));
-                    }
-                    if text.trim().is_empty() {
-                        return Ok(Value::Null);
-                    }
-                    return serde_json::from_str::<Value>(&text)
-                        .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()));
+                    return decode_edge_body(status, &text);
                 }
                 Err("重定向次数超过限制".into())
             }.await;
@@ -642,22 +741,9 @@ pub async fn edge(
             result
         }
     })
-    .await?;
-
-    if value.is_null() {
-        return Ok(Value::Null);
-    }
-
-    if value.get("status").and_then(|v| v.as_i64()) == Some(1) {
-        Ok(value.get("data").cloned().unwrap_or(Value::Null))
-    } else {
-        Err(value
-            .get("msg")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("接口返回失败")
-            .to_string())
-    }
+    .await
+    .map_err(classify_edge_transport)?;
+    unpack_edge_response(value)
 }
 
 /// 拉原始字节（图片 / m3u8 / 分片）。
@@ -668,7 +754,7 @@ pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String>
     let mut attempt = 0;
     let url = url.to_string();
     let referer = format!("{}/", base());
-    with_retry(true, || {
+    with_retry(true, || true, || {
         attempt += 1;
         let attempt = attempt;
         let resource = resource.clone();
@@ -717,7 +803,7 @@ mod tests {
             "重定向次数超过限制",
         ] {
             let calls = AtomicUsize::new(0);
-            assert!(with_retry(true, || async {
+            assert!(with_retry(true, || true, || async {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Err::<(), _>(error.to_string())
             })
@@ -731,7 +817,7 @@ mod tests {
         assert!(!should_heal_client("HTTP 404 Not Found"));
         for error in ["HTTP 503 Service Unavailable", "请求超时"] {
             let calls = AtomicUsize::new(0);
-            let value = with_retry(true, || {
+            let value = with_retry(true, || true, || {
                 let attempt = calls.fetch_add(1, Ordering::SeqCst);
                 async move {
                     if attempt == 0 {
@@ -746,6 +832,89 @@ mod tests {
             assert_eq!(value, 42);
             assert_eq!(calls.load(Ordering::SeqCst), 2);
         }
+    }
+
+    #[tokio::test]
+    async fn playback_address_client_does_not_reuse_http_connections() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = connections.clone();
+        let server = tokio::spawn(async move {
+            let mut clients = tokio::task::JoinSet::new();
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                accepted.fetch_add(1, Ordering::SeqCst);
+                clients.spawn(async move {
+                    let mut socket = BufReader::new(socket);
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match socket.read_line(&mut line).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if line == "\r\n" => {
+                                if socket
+                                    .get_mut()
+                                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+        });
+        let client = client_builder(false).no_proxy().build().unwrap();
+        for _ in 0..2 {
+            let response = client
+                .get(&url)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+        server.abort();
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn obsolete_playback_context_stops_retry_during_backoff() {
+        use std::cell::Cell;
+        use tokio::sync::Notify;
+
+        let current = Cell::new(true);
+        let checks = Cell::new(0);
+        let attempts = Cell::new(0);
+        let waiting = Notify::new();
+        let result = with_retry(
+            true,
+            || {
+                checks.set(checks.get() + 1);
+                if checks.get() == 2 {
+                    waiting.notify_one();
+                }
+                current.get()
+            },
+            || async {
+                attempts.set(attempts.get() + 1);
+                Err::<(), _>("HTTP 503 Service Unavailable".into())
+            },
+        );
+        let (result, ()) = tokio::join!(result, async {
+            waiting.notified().await;
+            current.set(false);
+        });
+
+        assert_eq!(result, Err(EDGE_CONTEXT_CHANGED.into()));
+        assert_eq!(attempts.get(), 1);
     }
 
     #[test]
@@ -768,7 +937,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         for (retry, expected) in [(false, 1), (true, 3)] {
             let calls = AtomicUsize::new(0);
-            let result = with_retry(retry, || async {
+            let result = with_retry(retry, || true, || async {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Err::<(), _>("rejected".to_string())
             })
@@ -879,6 +1048,22 @@ mod tests {
         assert!(!trusted_auth_origin("https://huangguoai.com.evil.example"));
     }
 
+    #[test]
+    fn authentication_errors_keep_their_response_source() {
+        use reqwest::StatusCode;
+
+        let html = "<html>登录已过期，请重新登录</html>";
+        for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::OK] {
+            let error = decode_edge_body(status, html).unwrap_err();
+            assert!(matches!(classify_edge_transport(error), EdgeError::Transport(_)));
+        }
+        let error = decode_edge_body(StatusCode::UNAUTHORIZED, html).unwrap_err();
+        assert!(matches!(classify_edge_transport(error), EdgeError::Unauthorized));
+
+        let response = decode_edge_body(StatusCode::OK, r#"{"status":0,"msg":"请先登录"}"#).unwrap();
+        assert!(matches!(unpack_edge_response(response), Err(EdgeError::Business(message)) if message == "请先登录"));
+    }
+
     #[tokio::test]
     async fn untrusted_origins_reject_credentials_before_network() {
         for (path, body, token) in [
@@ -897,7 +1082,7 @@ mod tests {
             let err = edge("https://mirror.invalid", "POST", path, body, token)
                 .await
                 .unwrap_err();
-            assert!(err.contains("镜像线路仅供游客浏览"));
+            assert!(String::from(err).contains("镜像线路仅供游客浏览"));
         }
     }
 

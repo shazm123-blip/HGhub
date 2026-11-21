@@ -7,8 +7,8 @@ import { IBoltF, ICheck, IClose, IRefresh, ISettings } from "../icons";
 type ProbeMap = Record<string, LineProbe>;
 
 /* 单条线路：左侧点一下即切换，右侧单独检测 */
-function Row({ item, current, probe, busy, switching, onPick, onProbe }: {
-  item: LineItem; current: boolean; probe?: LineProbe; busy: boolean; switching: boolean;
+function Row({ item, current, probe, busy, probeDisabled, switching, onPick, onProbe }: {
+  item: LineItem; current: boolean; probe?: LineProbe; busy: boolean; probeDisabled: boolean; switching: boolean;
   onPick: (url: string) => void; onProbe: (url: string) => void;
 }) {
   return (
@@ -25,7 +25,7 @@ function Row({ item, current, probe, busy, switching, onPick, onProbe }: {
         className={`text-[11px] tabular-nums shrink-0 ${probe ? (probe.ok ? "text-mint font-semibold" : "text-danger") : "text-dim"}`}>
         {busy ? "测速中…" : probe ? (probe.ok ? `${probe.ms}ms` : probe.status ? `HTTP ${probe.status}` : "失败") : "—"}
       </span>
-      <button onClick={() => onProbe(item.url)} disabled={busy || switching}
+      <button onClick={() => onProbe(item.url)} disabled={probeDisabled || switching}
         className="shrink-0 h-7 px-2.5 rounded-(--r-sm) bg-s4 text-[11px] text-on/80 pressable disabled:opacity-50">检测</button>
     </div>
   );
@@ -40,7 +40,6 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   const [loadingMirrors, setLoadingMirrors] = useState(false);
   const [probes, setProbes] = useState<ProbeMap>({});
   const [probing, setProbing] = useState("");
-  const [probingBatch, setProbingBatch] = useState(false);
   const [sortBySpeed, setSortBySpeed] = useState(false);
   const [switching, setSwitching] = useState("");
   const probeRunRef = useRef(0);
@@ -66,7 +65,6 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   const stopProbing = () => {
     probeRunRef.current += 1;
     setProbing("");
-    setProbingBatch(false);
   };
 
   /* 镜像线路只在用户点开「线路」后才去拉，拉过一次就留在内存里，可手动刷新 */
@@ -81,11 +79,10 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   }, [open]);
 
   const probe = async (list: LineItem[], key: string) => {
-    if (!list.length) return;
+    if (!list.length || probing || switching) return;
     const runId = ++probeRunRef.current;
     const isBatch = key === "fixed" || key === "mirrors";
     setProbing(key);
-    setProbingBatch(isBatch);
     try {
       for (let i = 0; i < list.length; i += 6) {
         if (probeRunRef.current !== runId) return;
@@ -104,7 +101,6 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
     } finally {
       if (probeRunRef.current === runId) {
         setProbing("");
-        setProbingBatch(false);
       }
     }
   };
@@ -181,7 +177,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           {probing === "fixed" ? (
             <button onClick={stopProbing} className="ml-auto shrink-0 whitespace-nowrap text-[11px] text-danger pressable">停止检测</button>
           ) : (
-            <button onClick={() => void probe(fixed, "fixed")} disabled={!!switching || probingBatch || !fixed.length}
+            <button onClick={() => void probe(fixed, "fixed")} disabled={!!switching || !!probing || !fixed.length}
               className="ml-auto shrink-0 whitespace-nowrap text-[11px] text-primary pressable disabled:opacity-50">
               全部检测
             </button>
@@ -190,7 +186,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
         <div className="rounded-(--r-md) bg-s2 divide-y divide-s3 overflow-hidden">
           {fixed.map((it) => (
             <Row key={it.url} item={it} current={state?.base === it.url} probe={probes[it.url]}
-              busy={probing === it.url} switching={!!switching} onPick={pick} onProbe={(u) => void probe([{ url: u }], u)} />
+              busy={probing === it.url} probeDisabled={!!probing} switching={!!switching} onPick={pick} onProbe={(u) => void probe([{ url: u }], u)} />
           ))}
           {!fixed.length && <div className="px-3.5 py-3 text-[11px] text-mut">读取中…</div>}
         </div>
@@ -224,7 +220,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           )}
           {!loadingMirrors && sortedMirrors.map((it) => (
             <Row key={it.url} item={it} current={state?.base === it.url} probe={probes[it.url]}
-              busy={probing === it.url} switching={!!switching} onPick={pick} onProbe={(u) => void probe([{ url: u }], u)} />
+              busy={probing === it.url} probeDisabled={!!probing} switching={!!switching} onPick={pick} onProbe={(u) => void probe([{ url: u }], u)} />
           ))}
         </div>
         {!loadingMirrors && !!mirrors?.length && (
@@ -232,7 +228,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
             {probing === "mirrors" ? (
               <button onClick={stopProbing} className="text-[11px] text-danger pressable">停止检测</button>
             ) : (
-              <button onClick={() => void probe(mirrors, "mirrors")} disabled={!!switching || probingBatch}
+              <button onClick={() => void probe(mirrors, "mirrors")} disabled={!!switching || !!probing}
                 className="text-[11px] text-primary pressable disabled:opacity-50">
                 全部检测（{mirrors.length}）
               </button>

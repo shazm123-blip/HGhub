@@ -1,6 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, platform as envPlatform, setApiBase } from "./api";
+import { api, platform as envPlatform, getApiBase, observeSessionExpiry, SESSION_EXPIRED_MESSAGE, setApiBase } from "./api";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./html";
 import type { FollowAuthor, User, VideoOrientationMeta, VideoSnapshot } from "./types";
 
@@ -49,12 +49,27 @@ export type WatchProgress = { id: number; ep: number; t: number; dur: number; at
 const MAX_SNAPSHOTS = 120;
 const MAX_ORIENTATIONS = 300;
 
-type Persist = {
+type Interactions = {
   likes: number[];
+  likeEpisodes?: Record<number, number[]>;
+  postLikes?: number[];
+  postFavs?: number[];
   favs: number[];
-  history: WatchProgress[];
   follows: number[];
   followAuthors: Record<number, FollowAuthor>;
+};
+
+type InteractionField = "likes" | "favs" | "follows";
+type InteractionOptions = {
+  remove?: boolean;
+  ep?: number;
+  post?: boolean;
+  author?: { name: string; avatar?: string };
+};
+
+type Persist = Interactions & {
+  accounts: Record<string, Interactions>;
+  history: WatchProgress[];
   landscapeFitPref: "contain" | "cover";
   muted: boolean;
   muteOnStartup: boolean;
@@ -69,9 +84,9 @@ type CachePersist = {
 
 const LS = "hghub_app_v1";
 const LS_CACHE = "hghub_cache_v1";
+const EMPTY_INTERACTIONS: Interactions = { likes: [], favs: [], follows: [], followAuthors: {} };
 const DEFAULTS: Persist = {
-  likes: [], favs: [], history: [], follows: [],
-  followAuthors: {},
+  ...EMPTY_INTERACTIONS, history: [], accounts: {},
   landscapeFitPref: "contain",
   muted: true, muteOnStartup: true, volume: 0.7, searchHist: [],
 };
@@ -109,6 +124,10 @@ function loadPersistState(): { persist: Persist; cache: CachePersist; migratedCa
       if (parsed.videoOrientations && typeof parsed.videoOrientations === "object") legacyOrientations = parsed.videoOrientations;
       const muteOnStartup = parsed.muteOnStartup !== false;
       persist = {
+        accounts: parsed.accounts && typeof parsed.accounts === "object" ? parsed.accounts : {},
+        likeEpisodes: parsed.likeEpisodes,
+        postLikes: parsed.postLikes,
+        postFavs: parsed.postFavs,
         likes: Array.isArray(parsed.likes) ? parsed.likes : DEFAULTS.likes,
         favs: Array.isArray(parsed.favs) ? parsed.favs : DEFAULTS.favs,
         history: normalizeHistory(parsed.history),
@@ -179,7 +198,8 @@ type Store = {
   canGoBack: boolean; canGoForward: boolean; travel: (offset: -1 | 1) => void;
   stack: Page[]; push: (p: PageInput) => void; pop: () => void;
   user: User | null; setUser: (u: User | null) => void;
-  mergeUserInteractions: (u: User | null) => void;
+  handleSessionError: (error: unknown) => void;
+  prepareLogin: () => (user: User) => void;
   loginOpen: boolean; setLoginOpen: (b: boolean) => void;
   linePickerOpen: boolean; setLinePickerOpen: (b: boolean) => void;
   shortcutsOpen: boolean; setShortcutsOpen: (b: boolean) => void;
@@ -192,16 +212,12 @@ type Store = {
   getVideoOrientation: (id: number) => VideoOrientationMeta | undefined;
   landscapeFitPref: "contain" | "cover";
   setLandscapeFitPref: (fit: "contain" | "cover") => void;
-  isLiked: (id: number) => boolean; isFav: (id: number) => boolean;
-  toggleLikeLocal: (id: number) => boolean;
-  toggleFavLocal: (id: number) => boolean;
-  removeFav: (id: number) => void;
-  removeLike: (id: number) => void;
+  isLiked: (id: number, post?: boolean) => boolean; isFav: (id: number, post?: boolean) => boolean;
+  changeInteraction: (field: InteractionField, id: number, options?: InteractionOptions) => Promise<boolean | null>;
   removeHistory: (id: number) => void;
   /** 记一条观看记录；`ep/t/dur` 省略时保留原进度，`ep` 变了就把进度归零 */
-  addHistory: (id: number, ep?: number, t?: number, dur?: number) => void;
+  addHistory: (id: number, ep?: number, t?: number, dur?: number, immediate?: boolean) => void;
   clearHistory: () => void;
-  toggleFollowLocal: (uid: number, author?: { name: string; avatar?: string }) => boolean;
   theater: boolean; setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
   fs: boolean; setFs: (v: boolean | ((p: boolean) => boolean)) => void;
   muted: boolean; setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
@@ -221,15 +237,20 @@ let seq = 0;
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const initialRef = useRef<ReturnType<typeof loadPersistState> | null>(null);
   if (!initialRef.current) initialRef.current = loadPersistState();
-  const [p, setP] = useState<Persist>(initialRef.current.persist);
+  const [p, setPersist] = useState<Persist>(initialRef.current.persist);
   const [cache, setCache] = useState<CachePersist>(initialRef.current.cache);
   const pRef = useRef(p);
-  pRef.current = p;
   const cacheRef = useRef(cache);
   cacheRef.current = cache;
   const dirtyPRef = useRef(initialRef.current.migratedCache);
   const dirtyCacheRef = useRef(initialRef.current.migratedCache);
-  const skipFirstPRef = useRef(true);
+  const setP = useCallback((update: (previous: Persist) => Persist) => {
+    const next = update(pRef.current);
+    if (next === pRef.current) return;
+    pRef.current = next;
+    dirtyPRef.current = true;
+    setPersist(next);
+  }, []);
   const skipFirstCacheRef = useRef(true);
   const pTimerRef = useRef<number | undefined>(undefined);
   const cacheTimerRef = useRef<number | undefined>(undefined);
@@ -242,7 +263,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     entries: [{ tab: "home", stack: [] }], index: 0,
   });
   const { tab, stack } = navigation.entries[navigation.index];
-  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<{ user: User; key: string } | null>(null);
+  const sessionChange = useRef(0);
+  const user = session?.user ?? null;
+  const accountKey = session?.key;
+  const interactions = accountKey ? (p.accounts[accountKey] ?? EMPTY_INTERACTIONS) : p;
   const [loginOpen, setLoginOpen] = useState(false);
   const [linePickerOpen, setLinePickerOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -290,12 +315,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (skipFirstPRef.current) {
-      skipFirstPRef.current = false;
-      if (!dirtyPRef.current) return;
-    } else {
-      dirtyPRef.current = true;
-    }
+    if (!dirtyPRef.current) return;
     window.clearTimeout(pTimerRef.current);
     pTimerRef.current = window.setTimeout(() => {
       pTimerRef.current = undefined;
@@ -332,38 +352,86 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [flushPersist]);
 
-  const mergeUserInteractions = useCallback((u: User | null) => {
-    const inter = u?.interactions;
-    if (!inter) return;
-    const srvLikes = Array.isArray(inter.like_video_ids) ? inter.like_video_ids.filter((x) => typeof x === "number") : [];
-    const srvFavs = Array.isArray(inter.favorite_video_ids) ? inter.favorite_video_ids.filter((x) => typeof x === "number") : [];
-    const srvFollows = Array.isArray(inter.follow_user_ids) ? inter.follow_user_ids.filter((x) => typeof x === "number") : [];
-    if (!srvLikes.length && !srvFavs.length && !srvFollows.length) return;
+  const applyUser = useCallback((u: User | null, cached = false, beforeLogin?: Persist["accounts"]) => {
+    sessionChange.current++;
+    if (!u?.id) { setSession(null); return; }
+    const key = JSON.stringify([new URL(getApiBase()).origin, u.id]);
     setP((s) => {
-      const mergeIds = (local: number[], incoming: number[]) => {
-        if (!incoming.length) return local;
-        const seen = new Set(local);
-        const added = incoming.filter((id) => !seen.has(id));
-        return added.length ? [...local, ...added] : local;
+      const saved = s.accounts[key];
+      // app_boot returns the login-time snapshot, which may predate local changes.
+      if (cached && saved) return s;
+      const previous = saved ?? EMPTY_INTERACTIONS;
+      const before = beforeLogin ? beforeLogin[key] ?? EMPTY_INTERACTIONS : previous;
+      const inter = u.interactions;
+      const ids = (value: unknown, field: "likes" | "favs" | "follows") => {
+        if (!Array.isArray(value)) return previous[field];
+        const server = new Set<number>(value.filter((id) => typeof id === "number"));
+        if (before[field] !== previous[field]) {
+          const old = new Set(before[field]);
+          const current = new Set(previous[field]);
+          for (const id of old) if (!current.has(id)) server.delete(id);
+          for (const id of current) if (!old.has(id)) server.add(id);
+        }
+        return [...server];
       };
-      const likes = mergeIds(s.likes, srvLikes);
-      const favs = mergeIds(s.favs, srvFavs);
-      const follows = mergeIds(s.follows, srvFollows);
-      if (likes === s.likes && favs === s.favs && follows === s.follows) return s;
-      const next = { ...s, likes, favs, follows };
-      pRef.current = next;
-      return next;
+      const follows = ids(inter?.follow_user_ids, "follows");
+      const likes = new Set(ids(inter?.like_video_ids, "likes"));
+      const likeEpisodes: Record<number, number[]> = Array.isArray(inter?.like_video_episodes)
+        ? {} : { ...previous.likeEpisodes };
+      if (Array.isArray(inter?.like_video_episodes)) {
+        for (const entry of inter.like_video_episodes) {
+          if (!entry || !Number.isInteger(entry.video_id) || !Number.isInteger(entry.ep) || entry.ep <= 0) continue;
+          const episodes = likeEpisodes[entry.video_id] ??= [];
+          if (!episodes.includes(entry.ep)) episodes.push(entry.ep);
+        }
+      }
+      if (before.likeEpisodes !== previous.likeEpisodes) {
+        const old = before.likeEpisodes ?? {};
+        const current = previous.likeEpisodes ?? {};
+        for (const id of new Set([...Object.keys(old), ...Object.keys(current)].map(Number))) {
+          if (old[id] === current[id]) continue;
+          const before = new Set(old[id]);
+          const after = new Set(current[id]);
+          const server = new Set(likeEpisodes[id]);
+          const hadServerEpisodes = server.size > 0;
+          for (const ep of before) if (!after.has(ep)) server.delete(ep);
+          for (const ep of after) if (!before.has(ep)) server.add(ep);
+          if (server.size) {
+            likeEpisodes[id] = [...server];
+            likes.add(id);
+          } else {
+            delete likeEpisodes[id];
+            if (hadServerEpisodes) likes.delete(id);
+          }
+        }
+      }
+      return { ...s, accounts: { ...s.accounts, [key]: {
+        likes: [...likes],
+        likeEpisodes,
+        postLikes: previous.postLikes,
+        postFavs: previous.postFavs,
+        favs: ids(inter?.favorite_video_ids, "favs"),
+        follows,
+        followAuthors: Object.fromEntries(follows.flatMap((id) => previous.followAuthors[id] ? [[id, previous.followAuthors[id]]] : [])),
+      } } };
     });
-  }, []);
+    setSession({ user: u, key });
+  }, [setP]);
+  const setUser = useCallback((u: User | null) => applyUser(u), [applyUser]);
+  const prepareLogin = useCallback(() => {
+    const beforeLogin = pRef.current.accounts;
+    return (u: User) => applyUser(u, false, beforeLogin);
+  }, [applyUser]);
 
   useEffect(() => {
+    const revision = sessionChange.current;
+    let alive = true;
     api.boot()
       .then((r) => {
-        if (r.base) setApiBase(r.base);
-        if (r.user && (r.user as User).id) {
-          const u = r.user as User;
-          setUser(u);
-          mergeUserInteractions(u);
+        if (!alive) return;
+        if (sessionChange.current === revision) {
+          if (r.base) setApiBase(r.base);
+          if (r.user && (r.user as User).id) applyUser(r.user as User, true);
         }
         if (typeof r.strict_security === "boolean") {
           setStrictSecurityState(r.strict_security);
@@ -373,7 +441,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCliRelaxed(!!r.cli_relaxed);
       })
       .catch(() => { /* 离线也能用 */ });
-  }, [mergeUserInteractions]);
+    return () => { alive = false; };
+  }, [applyUser]);
 
   const setStrictSecurity = useCallback(async (on: boolean) => {
     if (!strictSecurityReady) throw new Error("安全设置尚未读取，请重新启动应用");
@@ -442,60 +511,95 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     else navigate(current => ({ ...current, stack: current.stack.slice(0, -1) }));
   }, [navigate, navigation.index, travel]);
 
-  const toggleLikeLocal = useCallback((id: number) => {
-    const on = !pRef.current.likes.includes(id);
-    pRef.current = {
-      ...pRef.current,
-      likes: on ? [id, ...pRef.current.likes] : pRef.current.likes.filter((x) => x !== id),
+  const pendingInteractions = useRef(new Set<string>());
+  const revision = sessionChange.current;
+  const handleSessionError = useCallback((error: unknown) => {
+    if (!accountKey || sessionChange.current !== revision || !(error instanceof Error)) return;
+    if (error.message === SESSION_EXPIRED_MESSAGE || error.message === "请先登录") {
+      setUser(null);
+      setLoginOpen(true);
+    }
+  }, [accountKey, revision, setUser]);
+  useLayoutEffect(() => observeSessionExpiry(handleSessionError), [handleSessionError]);
+
+  const changeInteraction = useCallback(async (field: InteractionField, id: number, options: InteractionOptions = {}) => {
+    if (sessionChange.current !== revision) return null;
+    const list = options.post && field === "likes" ? "postLikes"
+      : options.post && field === "favs" ? "postFavs" : field;
+    const key = JSON.stringify([accountKey, list, id]);
+    if (pendingInteractions.current.has(key)) return null;
+
+    const getInteractions = (state: Persist) => accountKey ? state.accounts[accountKey] : state;
+    const update = (change: (previous: Interactions) => Partial<Interactions>) => {
+      setP((state) => {
+        const patch = change(getInteractions(state));
+        return accountKey
+          ? { ...state, accounts: { ...state.accounts, [accountKey]: { ...state.accounts[accountKey], ...patch } } }
+          : { ...state, ...patch };
+      });
     };
-    setP((s) => {
-      const has = s.likes.includes(id);
-      if (on === has) return s;
-      return { ...s, likes: on ? [id, ...s.likes] : s.likes.filter((x) => x !== id) };
-    });
-    return on;
-  }, []);
-  const toggleFavLocal = useCallback((id: number) => {
-    const on = !pRef.current.favs.includes(id);
-    pRef.current = {
-      ...pRef.current,
-      favs: on ? [id, ...pRef.current.favs] : pRef.current.favs.filter((x) => x !== id),
+    const current = getInteractions(pRef.current);
+    const had = current[list]?.includes(id) ?? false;
+    const on = !options.remove && !had;
+    if (!had && !on) return null;
+
+    const assertCurrentSession = () => {
+      if (sessionChange.current !== revision) throw new Error("登录状态已变化，请重试");
     };
-    setP((s) => {
-      const has = s.favs.includes(id);
-      if (on === has) return s;
-      return { ...s, favs: on ? [id, ...s.favs] : s.favs.filter((x) => x !== id) };
-    });
-    return on;
-  }, []);
-  const toggleFollowLocal = useCallback((uid: number, author?: { name: string; avatar?: string }) => {
-    const on = !pRef.current.follows.includes(uid);
-    const nextAuthors = { ...pRef.current.followAuthors };
-    if (on && author?.name) nextAuthors[uid] = { id: uid, name: author.name, avatar: author.avatar };
-    else if (!on) delete nextAuthors[uid];
-    pRef.current = {
-      ...pRef.current,
-      follows: on ? [uid, ...pRef.current.follows] : pRef.current.follows.filter((x) => x !== uid),
-      followAuthors: nextAuthors,
+    const commit = (ep?: number) => {
+      // A successful response belongs to the account that sent it, even after logout.
+      update((state) => {
+        const others = (state[list] ?? []).filter((x) => x !== id);
+        const ids = on ? [id, ...others] : others;
+        if (list === "favs" || list === "postLikes" || list === "postFavs") return { [list]: ids };
+        if (field === "follows") {
+          const followAuthors = { ...state.followAuthors };
+          if (on && options.author?.name) followAuthors[id] = { id, ...options.author };
+          if (!on) delete followAuthors[id];
+          return { follows: ids, followAuthors };
+        }
+        const likeEpisodes = { ...state.likeEpisodes };
+        if (on && ep !== undefined) likeEpisodes[id] = [ep];
+        if (!on) {
+          const remaining = ep === undefined ? [] : (likeEpisodes[id] ?? []).filter((x) => x !== ep);
+          if (remaining.length) {
+            likeEpisodes[id] = remaining;
+            return { likeEpisodes };
+          }
+          delete likeEpisodes[id];
+        }
+        return { likes: ids, likeEpisodes };
+      });
     };
-    setP((s) => {
-      const has = s.follows.includes(uid);
-      const authors = { ...s.followAuthors };
-      if (on && author?.name) authors[uid] = { id: uid, name: author.name, avatar: author.avatar };
-      else if (!on) delete authors[uid];
-      if (on === has && (!on || !author?.name)) return s;
-      return { ...s, follows: on ? (has ? s.follows : [uid, ...s.follows]) : s.follows.filter((x) => x !== uid), followAuthors: authors };
-    });
-    return on;
-  }, []);
-  const removeFav = useCallback((id: number) => {
-    pRef.current = { ...pRef.current, favs: pRef.current.favs.filter((x) => x !== id) };
-    setP((s) => ({ ...s, favs: s.favs.filter((x) => x !== id) }));
-  }, []);
-  const removeLike = useCallback((id: number) => {
-    pRef.current = { ...pRef.current, likes: pRef.current.likes.filter((x) => x !== id) };
-    setP((s) => ({ ...s, likes: s.likes.filter((x) => x !== id) }));
-  }, []);
+
+    pendingInteractions.current.add(key);
+    try {
+      if (!accountKey) {
+        commit(on && !options.post ? options.ep : undefined);
+      } else if (field === "likes" && !options.post) {
+        const fallbackEp = options.ep ?? 1;
+        const episodes = on ? [fallbackEp] : (current.likeEpisodes?.[id] ?? [fallbackEp]);
+        for (const ep of episodes) {
+          assertCurrentSession();
+          await api.like(id, ep, on);
+          commit(ep);
+        }
+      } else {
+        if (field === "likes") await api.postLike(id, on);
+        else if (field === "follows") await api.follow(id, on);
+        else if (options.post) await api.postCollect(id, on);
+        else await api.collect(id, on);
+        commit();
+      }
+      return sessionChange.current === revision ? on : null;
+    } catch (error) {
+      if (sessionChange.current !== revision) return null;
+      handleSessionError(error);
+      throw error;
+    } finally {
+      pendingInteractions.current.delete(key);
+    }
+  }, [accountKey, revision, setP, handleSessionError]);
   const removeHistory = useCallback((id: number) => {
     setP((s) => ({ ...s, history: s.history.filter((x) => x.id !== id) }));
   }, []);
@@ -538,7 +642,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setLandscapeFitPref = useCallback((fit: "contain" | "cover") => {
     setP((s) => (s.landscapeFitPref === fit ? s : { ...s, landscapeFitPref: fit }));
   }, []);
-  const addHistory = useCallback((id: number, ep?: number, t?: number, dur?: number) => {
+  const addHistory = useCallback((id: number, ep?: number, t?: number, dur?: number, immediate = false) => {
     if (!id) return;
     setP((s) => {
       const prev = s.history.find((x) => x.id === id);
@@ -546,13 +650,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const entry: WatchProgress = {
         id,
         ep: ep ?? prev?.ep ?? 1,
-        t: epChanged ? 0 : (t ?? prev?.t ?? 0),
-        dur: dur ?? prev?.dur ?? 0,
+        t: t ?? (epChanged ? 0 : prev?.t ?? 0),
+        dur: dur ?? (epChanged ? 0 : prev?.dur ?? 0),
         at: Date.now(),
       };
       return { ...s, history: [entry, ...s.history.filter((x) => x.id !== id)].slice(0, 80) };
     });
-  }, []);
+    if (immediate) flushPersist();
+  }, [flushPersist, setP]);
   const clearHistory = useCallback(() => setP((s) => ({ ...s, history: [] })), []);
   const addSearch = useCallback((q: string) => {
     const t = q.trim();
@@ -565,10 +670,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), []);
 
   const logout = useCallback(async () => {
-    try { await api.logout(); } catch { /* ignore */ }
+    if (sessionChange.current !== revision) return;
+    const logoutRequest = api.logout();
     setUser(null);
     toast("已退出登录", "info");
-  }, [toast]);
+    await logoutRequest.catch(() => {});
+  }, [revision, setUser, toast]);
 
   const setTheater = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTheaterState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
@@ -590,14 +697,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme, setTheme, themePref, setThemePref,
     canGoBack: navigation.index > 0, canGoForward: navigation.index < navigation.entries.length - 1, travel,
     tab, setTab, stack, push, pop,
-    user, setUser, mergeUserInteractions, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, logout,
-    likes: p.likes, favs: p.favs, history: p.history, follows: p.follows,
-    followAuthors: p.followAuthors, videoSnapshots: cache.videoSnapshots,
+    user, setUser, handleSessionError, prepareLogin, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, logout,
+    likes: interactions.likes, favs: interactions.favs, history: p.history, follows: interactions.follows,
+    followAuthors: interactions.followAuthors, videoSnapshots: cache.videoSnapshots,
     upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation,
     landscapeFitPref: p.landscapeFitPref, setLandscapeFitPref,
-    isLiked: (id) => p.likes.includes(id),
-    isFav: (id) => p.favs.includes(id),
-    toggleLikeLocal, toggleFavLocal, removeFav, removeLike, removeHistory, toggleFollowLocal, addHistory, clearHistory,
+    isLiked: (id, post) => (post ? interactions.postLikes : interactions.likes)?.includes(id) ?? false,
+    isFav: (id, post) => (post ? interactions.postFavs : interactions.favs)?.includes(id) ?? false,
+    changeInteraction, removeHistory, addHistory, clearHistory,
     muted: p.muted, setMuted, volume: p.volume, setVolume,
     theater, setTheater, fs, setFs,
     muteOnStartup: p.muteOnStartup, setMuteOnStartup,
@@ -606,9 +713,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     lineVersion, bumpLineVersion,
     homeRefresh, bumpHomeRefresh,
     toasts, toast,
-  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, mergeUserInteractions, loginOpen, linePickerOpen, shortcutsOpen, logout,
-    p, cache, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
-    toggleLikeLocal, toggleFavLocal, removeFav, removeLike, removeHistory, toggleFollowLocal, addHistory, clearHistory,
+  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, setUser, handleSessionError, prepareLogin, loginOpen, linePickerOpen, shortcutsOpen, logout,
+    p, interactions, cache, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
+    changeInteraction, removeHistory, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, removeSearchHist, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion, homeRefresh, bumpHomeRefresh, toasts, toast, theater, setTheater, fs, setFs]);
 

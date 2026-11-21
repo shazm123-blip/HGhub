@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tokio::sync::watch;
 
 fn lock_state<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -18,11 +19,19 @@ pub struct Session {
     pub token: String,
     #[serde(default)]
     pub user: serde_json::Value,
+    #[serde(skip)]
+    revision: u64,
+}
+
+pub struct Credentials {
+    pub token: String,
+    revision: u64,
 }
 
 pub struct SessionStore {
     pub file: Mutex<Option<PathBuf>>,
     pub current: Mutex<Session>,
+    revisions: watch::Sender<u64>,
 }
 
 impl SessionStore {
@@ -30,6 +39,7 @@ impl SessionStore {
         Self {
             file: Mutex::new(None),
             current: Mutex::new(Session::default()),
+            revisions: watch::channel(0).0,
         }
     }
 
@@ -49,6 +59,27 @@ impl SessionStore {
         (cur.origin == origin && !cur.token.is_empty()).then(|| cur.token.clone())
     }
 
+    pub fn credentials(&self, origin: &str) -> Option<Credentials> {
+        self.snapshot(origin).1
+    }
+
+    pub fn snapshot(&self, origin: &str) -> (u64, Option<Credentials>) {
+        let cur = lock_state(&self.current);
+        let credentials = (cur.origin == origin && !cur.token.is_empty()).then(|| Credentials {
+            token: cur.token.clone(),
+            revision: cur.revision,
+        });
+        (cur.revision, credentials)
+    }
+
+    pub fn matches_revision(&self, revision: u64) -> bool {
+        lock_state(&self.current).revision == revision
+    }
+
+    pub fn revisions(&self) -> watch::Receiver<u64> {
+        self.revisions.subscribe()
+    }
+
     pub fn user(&self, origin: &str) -> serde_json::Value {
         let cur = lock_state(&self.current);
         if cur.origin == origin && !cur.token.is_empty() {
@@ -59,30 +90,66 @@ impl SessionStore {
     }
 
     pub fn set(&self, origin: &str, token: String, user: serde_json::Value) {
-        {
-            let mut cur = lock_state(&self.current);
-            cur.origin = origin.to_string();
-            cur.token = token;
-            cur.user = user;
-        }
-        self.persist();
+        let mut cur = lock_state(&self.current);
+        cur.revision += 1;
+        cur.origin = origin.to_string();
+        cur.token = token;
+        cur.user = user;
+        self.revisions.send_replace(cur.revision);
+        self.persist(&cur);
+    }
+
+    fn reset(&self, current: &mut Session) {
+        *current = Session {
+            revision: current.revision + 1,
+            ..Session::default()
+        };
+        self.revisions.send_replace(current.revision);
+        self.persist(current);
     }
 
     pub fn clear(&self) {
-        {
-            let mut cur = lock_state(&self.current);
-            cur.token.clear();
-            cur.origin.clear();
-            cur.user = serde_json::Value::Null;
-        }
-        self.persist();
+        self.reset(&mut lock_state(&self.current));
     }
 
-    fn persist(&self) {
-        let snapshot = lock_state(&self.current).clone();
+    pub fn take_token(&self, origin: &str) -> Option<String> {
+        let mut cur = lock_state(&self.current);
+        if cur.origin != origin || cur.token.is_empty() {
+            return None;
+        }
+        let token = std::mem::take(&mut cur.token);
+        self.reset(&mut cur);
+        Some(token)
+    }
+
+    pub fn clear_if_matches(&self, origin: &str, credentials: &Credentials) -> bool {
+        let mut cur = lock_state(&self.current);
+        if cur.origin != origin || cur.revision != credentials.revision {
+            return false;
+        }
+        self.reset(&mut cur);
+        true
+    }
+
+    pub fn update_user_if_matches(
+        &self,
+        origin: &str,
+        credentials: &Credentials,
+        user: serde_json::Value,
+    ) -> bool {
+        let mut cur = lock_state(&self.current);
+        if cur.origin != origin || cur.revision != credentials.revision {
+            return false;
+        }
+        cur.user = user;
+        self.persist(&cur);
+        true
+    }
+
+    fn persist(&self, snapshot: &Session) {
         let path = lock_state(&self.file).clone();
         if let Some(path) = path {
-            if let Ok(text) = serde_json::to_string_pretty(&snapshot) {
+            if let Ok(text) = serde_json::to_string_pretty(snapshot) {
                 let tmp = path.with_extension("json.tmp");
                 let mut opts = std::fs::OpenOptions::new();
                 opts.write(true).create(true).truncate(true);
@@ -138,6 +205,26 @@ mod tests {
     }
 
     #[test]
+    fn stale_responses_cannot_change_a_replacement_session() {
+        let store = SessionStore::new();
+        let origin = "https://huangguoai.com";
+        store.set(origin, "same-token".into(), json!({"id": 1}));
+        let old = store.credentials(origin).unwrap();
+        store.set(origin, "same-token".into(), json!({"id": 2}));
+        let current = store.credentials(origin).unwrap();
+
+        assert!(!store.clear_if_matches(origin, &old));
+        assert!(!store.clear_if_matches("https://huangguoai.ai", &current));
+        assert!(!store.update_user_if_matches(origin, &old, json!({"id": 1})));
+        assert_eq!(store.token(origin).as_deref(), Some("same-token"));
+        assert_eq!(store.user(origin), json!({"id": 2}));
+
+        assert!(store.clear_if_matches(origin, &current));
+        assert_eq!(store.token(origin), None);
+        assert!(store.user(origin).is_null());
+    }
+
+    #[test]
     fn legacy_sessions_are_not_assigned_to_current_line() {
         let store = SessionStore::new();
         *lock_state(&store.current) =
@@ -176,6 +263,16 @@ mod tests {
             reloaded.token("https://huangguoai.com").as_deref(),
             Some("secret-token")
         );
+        let mut revisions = reloaded.revisions();
+        assert_eq!(
+            reloaded.take_token("https://huangguoai.com").as_deref(),
+            Some("secret-token")
+        );
+        assert!(revisions.has_changed().unwrap());
+        assert_ne!(*revisions.borrow_and_update(), 0);
+        let signed_out = SessionStore::new();
+        signed_out.bind(dir.clone());
+        assert!(signed_out.credentials("https://huangguoai.com").is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
