@@ -1,14 +1,16 @@
 # HGhub - Mihomo classical/text rule-provider
-# Source inventory: 2026-11-07; see README.md for scope and evidence.
+# Source inventory: 2026-11-10; see README.md for scope and evidence.
 # Fixed API origins
 DOMAIN-SUFFIX,huangguoai.com
 DOMAIN-SUFFIX,huangguoai.ai
 # Mirror publishing page (do not match all pages.dev)
 DOMAIN,huangguoai.pages.dev
-# Media CDN and mirror suffixes from repository test samples
+# Mirror domains published by publish.js (current: adihsppe.cc; legacy sample kept)
+DOMAIN-SUFFIX,adihsppe.cc
+DOMAIN-SUFFIX,xxbgwypx.cc
+# Media CDN: covers/avatars + HLS segments and keys (drleao.cn), master playlist (hzjvlo.cn)
 DOMAIN-SUFFIX,drleao.cn
 DOMAIN-SUFFIX,hzjvlo.cn
-DOMAIN-SUFFIX,xxbgwypx.cc
 # Update API and release page (shared GitHub infrastructure)
 DOMAIN,api.github.com
 DOMAIN,github.com
