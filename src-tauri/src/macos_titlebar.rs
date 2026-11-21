@@ -10,11 +10,13 @@ use objc2_app_kit::{
     NSBackingStoreType, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use tauri::{LogicalPosition, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::window::{Effect, EffectsBuilder};
+use tauri::{Emitter, LogicalPosition, WebviewWindowBuilder};
 
 const MAIN_WINDOW: &str = "main";
 
-/// 前端标题栏高度（逻辑像素），须与 src/index.css 中 `.win-titlebar` 的 `height` 保持一致。
+/// 前端标题栏高度（逻辑像素），须与 src/index.css 中 `.mac-toolbar` 的 `height` 保持一致。
 const TITLEBAR_HEIGHT: f64 = 44.0;
 
 /// 系统红绿灯按钮的几何信息（逻辑像素）。
@@ -93,7 +95,19 @@ pub fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         builder = builder
             .traffic_light_position(LogicalPosition::new(x, centered_y(metrics, TITLEBAR_HEIGHT)));
     }
-    builder.build()?;
+    let menu = Menu::default(app.handle())?;
+    let search = MenuItem::with_id(app, "find", "搜索", true, Some("Cmd+F"))?;
+    let settings = MenuItem::with_id(app, "settings", "设置…", true, Some("Cmd+Comma"))?;
+    menu.insert(&Submenu::with_items(app, "导航", true, &[&search, &settings])?, 3)?;
+    app.set_menu(menu)?;
+    builder
+        .on_menu_event(|window, event| {
+            if matches!(event.id().as_ref(), "find" | "settings") {
+                let _ = window.emit("mac-navigation", event.id().as_ref());
+            }
+        })
+        .effects(EffectsBuilder::new().effect(Effect::Sidebar).build())
+        .build()?;
     Ok(())
 }
 

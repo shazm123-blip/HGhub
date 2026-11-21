@@ -1,0 +1,7 @@
+{
+  "identifier": "macos-appearance",
+  "description": "同步主窗口原生侧栏与应用外观",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": ["core:window:allow-set-theme"]
+}

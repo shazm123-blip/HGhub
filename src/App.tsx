@@ -14,7 +14,7 @@ import Feed from "./components/Feed";
 import { PostsPage, PostDetail } from "./pages/Posts";
 import LoginModal from "./components/LoginModal";
 import { ToastHost } from "./components/ui";
-import { DesktopRail, DesktopTitleBar } from "./components/DesktopChrome";
+import { DesktopRail, DesktopTitleBar, MacToolbar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
 
@@ -141,7 +141,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 
   return (
     <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
-      {!isMobile && !theater && <DesktopRail collapsed={collapsed} />}
+      {!isMobile && platform !== "macos" && !theater && <DesktopRail collapsed={collapsed} />}
       <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${!isMobile && theater ? "is-theater-main" : ""}`}>
         <div data-tab className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
         <div data-tab className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
@@ -165,6 +165,15 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 function DesktopShell() {
   const [collapsed, setCollapsed] = useState(false);
   const { theater, platform } = useStore();
+  if (platform === "macos") return (
+    <div className="absolute inset-0 flex mac-window">
+      {!theater && <DesktopRail collapsed={collapsed} />}
+      <div className="min-w-0 flex-1 flex flex-col">
+        <MacToolbar collapsed={collapsed} theater={theater} onToggle={() => setCollapsed(c => !c)} />
+        <div className="relative flex-1 min-h-0"><MainViewport collapsed={collapsed} theater={theater} /></div>
+      </div>
+    </div>
+  );
   return (
     <div className={`absolute inset-0 flex flex-col bg-canvas win-root plat-${platform}`}>
       <DesktopTitleBar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />

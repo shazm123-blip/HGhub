@@ -125,6 +125,7 @@ type Store = {
   theme: Theme; setTheme: (t: Theme) => void;
   themePref: ThemePref; setThemePref: (t: ThemePref) => void;
   tab: Tab; setTab: (t: Tab) => void;
+  canGoBack: boolean; canGoForward: boolean; travel: (offset: -1 | 1) => void;
   stack: Page[]; push: (p: PageInput) => void; pop: () => void;
   user: User | null; setUser: (u: User | null) => void;
   loginOpen: boolean; setLoginOpen: (b: boolean) => void;
@@ -162,8 +163,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [sysTheme, setSysTheme] = useState<Theme>(systemTheme);
   const theme: Theme = themePref === "system" ? sysTheme : themePref;
   const setTheme = useCallback((t: Theme) => setThemePref(t), []);
-  const [tab, setTabRaw] = useState<Tab>("home");
-  const [stack, setStack] = useState<Page[]>([]);
+  type Destination = { tab: Tab; stack: Page[] };
+  const [navigation, setNavigation] = useState<{ entries: Destination[]; index: number }>({
+    entries: [{ tab: "home", stack: [] }], index: 0,
+  });
+  const { tab, stack } = navigation.entries[navigation.index];
   const [user, setUser] = useState<User | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -241,17 +245,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const setTab = useCallback((t: Tab) => { setTabRaw(t); setStack([]); setCleanState(false); setFs(false); }, [setFs]);
-  const push = useCallback((pg: PageInput) => {
+  const navigate = useCallback((update: (current: Destination) => Destination) => {
     setCleanState(false);
     setFs(false);
-    setStack((s) => [...s, { ...pg, key: `p${++seq}` } as Page]);
+    setNavigation(previous => {
+      const current = previous.entries[previous.index];
+      const next = update(current);
+      if (current === next) return previous;
+      if (envPlatform !== "macos") return { entries: [next], index: 0 };
+      const entries = [...previous.entries.slice(Math.max(0, previous.index - 48), previous.index + 1), next];
+      return { entries, index: entries.length - 1 };
+    });
+  }, [setFs]);
+  const setTab = useCallback((tab: Tab) => navigate(current =>
+    current.tab === tab && !current.stack.length ? current : { tab, stack: [] }), [navigate]);
+  const push = useCallback((pg: PageInput) => {
+    const page = { ...pg, key: `p${++seq}` } as Page;
+    navigate(current => ({ ...current, stack: [...current.stack, page] }));
+  }, [navigate]);
+  const travel = useCallback((offset: -1 | 1) => {
+    setCleanState(false);
+    setFs(false);
+    setNavigation(previous => ({ ...previous, index: Math.max(0, Math.min(previous.index + offset, previous.entries.length - 1)) }));
   }, [setFs]);
   const pop = useCallback(() => {
-    setCleanState(false);
-    setFs(false);
-    setStack((s) => s.slice(0, -1));
-  }, [setFs]);
+    if (envPlatform === "macos" && navigation.index > 0) travel(-1);
+    else navigate(current => ({ ...current, stack: current.stack.slice(0, -1) }));
+  }, [navigate, navigation.index, travel]);
 
   const toggleLikeLocal = useCallback((id: number) => {
     const on = !pRef.current.likes.includes(id);
@@ -343,6 +363,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<Store>(() => ({
     platform: envPlatform,
     theme, setTheme, themePref, setThemePref,
+    canGoBack: navigation.index > 0, canGoForward: navigation.index < navigation.entries.length - 1, travel,
     tab, setTab, stack, push, pop,
     user, setUser, loginOpen, setLoginOpen, logout,
     likes: p.likes, favs: p.favs, history: p.history, follows: p.follows,
@@ -356,7 +377,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion,
     toasts, toast,
-  }), [theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
+  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);

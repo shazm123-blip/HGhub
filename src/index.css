@@ -422,10 +422,6 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
   overflow: hidden;
   isolation: isolate;
 }
-/* macOS：titleBarStyle Overlay，标题栏左侧要让出系统红绿灯。
-   原生全屏时红绿灯被系统隐藏（is-native-fs），让位收回，避免留一条空白。 */
-.plat-macos .win-titlebar { padding-left: 84px; }
-.plat-macos .win-titlebar.is-native-fs { padding-left: 14px; }
 .plat-android .win-main,
 .plat-ios .win-main { background: var(--p-bg); overflow: hidden; }
 .win-page-in { animation: kf-page-in .26s cubic-bezier(.2,0,0,1) both; }
@@ -786,3 +782,28 @@ html.plat-ios {
   .row-cover { width: 116px; }
   .cover-title, .cover-frame .clamp-2 { font-size: 14px; font-weight: 600; }
 }
+
+/* AppKit draws the sidebar material behind the transparent WebView. */
+html.plat-macos, html.plat-macos body { background: transparent; }
+html.plat-macos.theme-light, html.plat-macos.theme-light body { background: transparent; }
+.mac-window .win-main { margin: 0; border-radius: 0; background: var(--p-bg); }
+.mac-window .win-sidebar { width: 212px; padding-top: 44px; border-right: 1px solid var(--p-fill); background: color-mix(in srgb, var(--p-canvas) 34%, transparent); }
+.mac-window .win-sidebar.is-compact { width: 86px; }
+.mac-window .win-sidebar-inner { padding: 5px 12px 14px; }
+.mac-brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 12px; font-size: 17px; }
+.mac-group { margin: 14px 10px 4px; font-size: 11px; font-weight: 600; color: var(--p-mut); }
+.mac-window .win-nav-item { height: 34px; gap: 9px; border-radius: 7px; }
+.mac-window .win-nav-item.is-selected { background: var(--p-fill); }
+.mac-window .win-nav-item.is-selected::before { display: none; }
+.mac-window .win-nav-symbol { color: var(--p-primary); }
+.mac-window .is-compact :is(.mac-group,.mac-brand strong) { display: none; }
+.mac-window .is-compact :is(.mac-brand,.win-account) { justify-content: center; }
+.mac-toolbar { height: 44px; flex: none; display: flex; align-items: center; gap: 3px; padding: 0 12px; background: var(--p-bg); border-bottom: .5px solid var(--p-sep); }
+.mac-toolbar.theater { padding-left: 84px; }
+.mac-toolbar strong { margin-left: 8px; font-size: 14px; }
+.mac-toolbar button { display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; min-width: 29px; height: 28px; color: var(--p-mut); }
+.mac-toolbar button:disabled { opacity: .32; cursor: default; }
+.mac-toolbar button:enabled:hover { background: var(--p-hover); color: var(--p-on); }
+.mac-toolbar .mac-search { margin-left: 5px; padding: 0 8px; gap: 6px; background: var(--p-fill-2); font-size: 12px; }
+.mac-search kbd { margin-left: 24px; font-size: 10px; }
+.mac-window :is(button,input):focus-visible { outline: 2px solid var(--p-primary); outline-offset: 1px; }

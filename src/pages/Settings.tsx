@@ -51,7 +51,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
-      {isIos ? <IosNavigation title="设置" onBack={onBack} /> : (
+      {isIos ? <IosNavigation title="设置" onBack={onBack} /> : platform !== "macos" && (
       <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
         <div className="relative px-3 pt-2 pb-4">
