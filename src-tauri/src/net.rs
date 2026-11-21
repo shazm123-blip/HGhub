@@ -94,7 +94,9 @@ pub fn set_base(url: &str) -> Result<String, String> {
         *cur = next.clone();
     }
     if let Some(path) = BASE_FILE.read().ok().and_then(|p| p.clone()) {
-        let _ = std::fs::write(path, json!({ "base": next }).to_string());
+        let temp = path.with_extension("json.tmp");
+        let _ = std::fs::write(&temp, json!({ "base": next }).to_string())
+            .and_then(|_| std::fs::rename(&temp, &path));
     }
     if previous != next {
         crate::playback_log::record(
@@ -173,7 +175,9 @@ async fn client_for(raw: &str) -> Result<(url::Url, Arc<reqwest::Client>), Strin
             return Ok((target, http));
         }
     }
-    let addrs = if strict {
+    let skip_local_dns =
+        proxy_override().is_some() && matches!(target.host(), Some(url::Host::Domain(_)));
+    let addrs = if strict && !skip_local_dns {
         network_policy::resolve_target(&target, strict).await?
     } else {
         Vec::new()
@@ -261,10 +265,57 @@ pub fn redact_proxy(raw: &str) -> String {
     }
 }
 
+pub const MAX_API_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_MEDIA_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+
+pub async fn read_bytes_limited(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return Err("响应体超出大小限制".into());
+    }
+    let cap = resp
+        .content_length()
+        .and_then(|len| usize::try_from(len).ok())
+        .map(|len| len.min(max_bytes))
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(cap);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| err_text(&e))? {
+        if out.len().saturating_add(chunk.len()) > max_bytes {
+            return Err("响应体超出大小限制".into());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+pub async fn read_text_limited(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let bytes = read_bytes_limited(resp, max_bytes).await?;
+    Ok(String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
 /// 看起来像代理 / 隧道问题（而不是目标站点本身不可达）。
 pub fn is_proxy_error(e: &str) -> bool {
     let e = e.to_ascii_lowercase();
     e.contains("tunnel") || e.contains("proxy")
+}
+
+fn should_heal_client(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    is_proxy_error(&lower)
+        || lower.contains("connect")
+        || lower.contains("timed out")
+        || lower.contains("refused")
+        || lower.contains("dns")
 }
 
 static LAST_HEAL: Lazy<std::sync::Mutex<Option<Instant>>> =
@@ -273,11 +324,7 @@ static LAST_HEAL: Lazy<std::sync::Mutex<Option<Instant>>> =
 /// 请求失败后按需重建客户端：代理隧道错误、连接被拒 / 超时都算「网络环境可能变了」。
 /// 3 秒内只重建一次，批量探测不会反复重建。
 pub fn heal_client(reason: &str) {
-    let connectish = reason.contains("Connect")
-        || reason.contains("timed out")
-        || reason.contains("refused")
-        || reason.contains("dns");
-    if !is_proxy_error(reason) && !connectish {
+    if !should_heal_client(reason) {
         return;
     }
     let mut last = match LAST_HEAL.lock() {
@@ -383,7 +430,7 @@ fn retryable_error(error: &str) -> bool {
     }
     if let Some(status) = error
         .strip_prefix("HTTP ")
-        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
         .and_then(|s| s.parse::<u16>().ok())
     {
         return matches!(status, 408 | 425 | 429 | 500..=599);
@@ -458,7 +505,7 @@ fn edge_redirect_target(
     location: &str,
     guest_get: bool,
 ) -> Result<url::Url, String> {
-    if !guest_get || !matches!(status, 301 | 302 | 303) {
+    if !guest_get || !matches!(status, 301..=303) {
         return Err("业务接口重定向已拒绝".into());
     }
     network_policy::redirect_target(current, location)
@@ -565,9 +612,9 @@ pub async fn edge(
                         next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
                         continue;
                     }
-                    let text = resp.text().await.map_err(|e| err_text(&e))?;
-                    if status.as_u16() == 401 || status.as_u16() == 403 {
-                        return Err("401".to_string());
+                    let text = read_text_limited(resp, MAX_API_BYTES).await?;
+                    if status.as_u16() == 401 {
+                        return Err("HTTP 401: 登录已过期，请重新登录".to_string());
                     }
                     if !status.is_success() {
                         return Err(format!(
@@ -644,7 +691,7 @@ pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String>
                     .get(reqwest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
-                let bytes = resp.bytes().await.map_err(|e| err_text(&e))?.to_vec();
+                let bytes = read_bytes_limited(resp, MAX_MEDIA_BYTES).await?;
                 Ok((ctype, bytes))
             }.await;
             crate::playback_log::record("network.end", json!({"request": request, "resource": resource, "attempt": attempt, "status": status, "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": result.as_ref().ok().map(|(_, bytes)| bytes.len()), "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e))}));
@@ -664,6 +711,7 @@ mod tests {
         for error in [
             "HTTP 404 Not Found: <html>nginx</html>",
             "HTTP 403 Forbidden",
+            "HTTP 401: 登录已过期，请重新登录",
             "401",
             "禁止访问内网",
             "重定向次数超过限制",
@@ -677,6 +725,10 @@ mod tests {
             .is_err());
             assert_eq!(calls.load(Ordering::SeqCst), 1, "{error}");
         }
+        assert!(should_heal_client("error sending request ← connection refused"));
+        assert!(should_heal_client("tunnel error: failed to connect"));
+        assert!(should_heal_client("dns lookup failed"));
+        assert!(!should_heal_client("HTTP 404 Not Found"));
         for error in ["HTTP 503 Service Unavailable", "请求超时"] {
             let calls = AtomicUsize::new(0);
             let value = with_retry(true, || {

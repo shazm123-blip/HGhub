@@ -28,12 +28,28 @@ export const isMobile = isAndroid || isIos;
  *  Rust 侧 `src-tauri/src/lib.rs` 里改写 m3u8 用的 scheme 必须与此一致。 */
 export const LOCAL = isMacos || isIos || isLinux ? "hg://localhost" : "http://hg.localhost";
 
+/** 当前上游基址（与 Rust line 保持同步，用于补全正文与封面中的相对 URL） */
+let apiBase = "https://huangguoai.com";
+export const getApiBase = () => apiBase;
+export const setApiBase = (next?: string) => {
+  if (next && /^https?:\/\//i.test(next)) apiBase = next.replace(/\/+$/, "");
+};
+
 /** src 是否已是本地协议地址（避免在详情页把代理地址再包一层） */
 export const isLocalMedia = (src: string) => src.startsWith(`${LOCAL}/`);
 
 /** 封面：经本地协议解密（站点封面是 AES 密文）。 */
-export const cover = (url?: string, _w = 480) =>
-  url ? `${LOCAL}/img?u=${encodeURIComponent(url)}` : "";
+export const cover = (url?: string, _w = 480) => {
+  const raw = (url || "").trim();
+  if (!raw) return "";
+  if (isLocalMedia(raw) || raw.startsWith("data:") || raw.startsWith("blob:")) return raw;
+  let absUrl = raw;
+  if (raw.startsWith("//")) absUrl = `https:${raw}`;
+  else if (!/^https?:\/\//i.test(raw)) {
+    try { absUrl = new URL(raw, apiBase).href; } catch { return ""; }
+  }
+  return `${LOCAL}/img?u=${encodeURIComponent(absUrl)}`;
+};
 
 /** 播放列表：经本地协议改写分片地址，规避 CORS 与防盗链。 */
 export const playlist = (url: string) => `${LOCAL}/hls?u=${encodeURIComponent(url)}`;
@@ -51,6 +67,9 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     // 落盘完整错误链（dns error / connection refused / 证书错误…），toast 只显示截断版
     logLine(`[api] ${cmd} → ${msg}`);
     const status = /^HTTP (\d{3})\b/.exec(msg)?.[1];
+    if (status === "401") {
+      throw new Error("登录已过期，请重新登录");
+    }
     if (status) {
       throw new Error(`服务器请求失败（HTTP ${status}），请稍后重试或在设置中切换线路`);
     }
@@ -99,8 +118,8 @@ export const api = {
 
   clearCache: () => invoke<void>("cache_clear"),
   netDiag: () => invoke<Record<string, unknown>>("net_diag"),
-  postLike: (id: number, on: boolean) => invoke<unknown>("api_post_like", { id, on }),
-  postCollect: (id: number, on: boolean) => invoke<unknown>("api_post_collect", { id, on }),
+  postLike: (id: number, on: boolean) => call<unknown>("api_post_like", { id, on }),
+  postCollect: (id: number, on: boolean) => call<unknown>("api_post_collect", { id, on }),
   postComments: (id: number, page: number, size: number) => call<CommentPage>("api_post_comments", { id, page, size }),
   like: (id: number, ep: number, on: boolean) => call<unknown>("api_like", { id, ep, on }),
   collect: (id: number, on: boolean) => call<unknown>("api_collect", { id, on }),
@@ -216,7 +235,7 @@ export function directMedia(url: string): string {
   return `${LOCAL}/seg?u=${encodeURIComponent(url)}`;
 }
 
-/** 按扩展名选择代理方式：m3u8 → 播放列表改写；其它 → 原样透传 */
+/** 按扩展名选择代理方式：已知直连封装走 /seg 透传，其它（含 m3u8 与无扩展名流）走 /hls */
 export function mediaUrl(url: string): string {
-  return /\.m3u8(\?|$)/i.test(url) ? playlist(url) : directMedia(url);
+  return /\.(mp4|webm|mov|m4v|ogv|ogg)(\?|#|$)/i.test(url) ? directMedia(url) : playlist(url);
 }

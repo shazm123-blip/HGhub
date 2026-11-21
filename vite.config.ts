@@ -27,5 +27,14 @@ export default defineConfig({
     target: "es2021",
     minify: "esbuild",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom"],
+          hls: ["hls.js"],
+          purify: ["dompurify"],
+        },
+      },
+    },
   },
 });

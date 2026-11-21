@@ -6,6 +6,13 @@ import LinePicker from "../components/LinePicker";
 import { copyPlaybackLog, initPlaybackLog, setPlaybackLog, usePlaybackLog } from "../playbackDiagnostics";
 import { IBack, IBoltF, IBroom, IChevR, IHeart, IInfo, ILink, ILockF, IMoon, IRefresh, ISettings, ISun, IVolMute } from "../icons";
 
+const Section = ({ title, children }: { title: string; children: ReactNode }) => (
+  <>
+    <div className="text-[10.5px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
+    <div className="rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
+  </>
+);
+
 /* 独立设置页：线路 / 外观 / 播放 / 本地数据 / 清理缓存 / 网络诊断 / 关于
    入口：Windows 侧栏「设置」、Android「我的」右上角齿轮 */
 export default function Settings({ onBack, wide }: { onBack: () => void; wide: boolean }) {
@@ -39,13 +46,6 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
     }
   };
 
-  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
-    <>
-      <div className="text-[10.5px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
-      <div className="rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
-    </>
-  );
-
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
       <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
@@ -64,12 +64,12 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
         </div>
       </div>
 
-      <div className="flex-1 scroll-y px-4 pt-1 pb-10">
+      <div className="flex-1 scroll-y px-4 pt-1" style={{ paddingBottom: "calc(var(--sab, 0px) + 32px)" }}>
         <div className={wide ? "max-w-[720px] mx-auto" : ""}>
           <Section title="外观">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">深色外观</div>
                 <div className="text-[10.5px] text-mut">跟随设计稿的 Fluent 深色</div>
               </div>
@@ -79,7 +79,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="播放">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">启动时静音</div>
                 <div className="text-[10.5px] text-mut">默认开启，每次启动均静音；关闭后记住上次静音状态。下次启动生效。</div>
@@ -90,33 +90,33 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="本地数据">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">本地喜欢</div>
                 <div className="text-[10.5px] text-mut">{favs.length} 部收藏 · {history.length} 条观看记录</div>
               </div>
             </div>
             <button onClick={() => setClearOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">清理缓存</div>
-                <div className="text-[10.5px] text-mut">封面 / 播放缓存与本地记录</div>
+                <div className="text-[10.5px] text-mut">解密图 / m3u8 / 密钥与分片内存缓存</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
           </Section>
 
           <Section title="网络">
             <button onClick={() => setLineOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">线路</div>
                 <div className="text-[10.5px] text-mut truncate">{lineBase ? hostOf(lineBase) : "固定线路 1（默认）"}</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">严格安全模式</div>
                 <div className="text-[10.5px] text-mut">
@@ -141,24 +141,25 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               try {
                 const text = JSON.stringify(await api.netDiag(), null, 2);
                 logLine(`[net_diag] ${text}`);
-                await navigator.clipboard?.writeText(text);
+                if (!navigator.clipboard) throw new Error("当前环境无法使用剪贴板，诊断结果已写入 debug.log");
+                await navigator.clipboard.writeText(text);
                 toast("网络诊断结果已复制", "ok");
               } catch (e) {
                 toast((e as Error).message || "诊断失败", "info");
               }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">网络诊断</div>
                 <div className="text-[10.5px] text-mut">检测 DNS / 系统代理 / 官网连通性</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
           </Section>
 
           <Section title="播放诊断">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">播放诊断日志</div>
                 <div className="text-[10.5px] text-mut">记录点击、拖动、切页和缓冲过程；复现问题后可关闭并复制日志</div>
@@ -173,31 +174,31 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               catch (e) { toast((e as Error).message || "复制日志失败", "info"); }
               finally { setCopyingLog(false); }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
                 <div className="text-[10.5px] text-mut break-all">{playbackLog.path || "日志仅保存在本机"}</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
           </Section>
 
           <Section title="其他">
             <button onClick={checkUpdate} disabled={checking} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">检查更新</div>
                 <div className="text-[10.5px] text-mut">{checking ? "检查中…" : `当前 v${APP_VERSION} · 对比 GitHub Release`}</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <button onClick={() => setAbout(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
-              <div className="flex-1">
+              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">关于 HGhub</div>
                 <div className="text-[10.5px] text-mut">版本 {APP_VERSION} · 仅限非商业使用</div>
               </div>
-              <IChevR size={15} className="text-mut" />
+              <IChevR size={15} className="shrink-0 text-mut" />
             </button>
           </Section>
 
@@ -210,7 +211,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
       <Modal open={about} onClose={() => setAbout(false)} width={392}>
         <div className="p-5">
           <div className="flex items-center gap-3">
-            <span className="w-11 h-11 rounded-(--r-sm) brand-grad glow-neon flex items-center justify-center text-on-primary text-[17px] font-black">H</span>
+            <span className="shrink-0 w-11 h-11 rounded-(--r-sm) brand-grad glow-neon flex items-center justify-center text-on-primary text-[17px] font-black">H</span>
             <div>
               <div className="text-[16px] font-bold text-on leading-tight">HGhub</div>
               <div className="text-[11px] text-mut mt-0.5">黄果短剧 · 第三方客户端 v{APP_VERSION}</div>
@@ -218,7 +219,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
           </div>
 
           <p className="text-[12px] text-on/70 leading-relaxed mt-4">
-            基于 Rust + Tauri 2 构建的跨平台客户端，支持 Windows、macOS、Android 与 Linux。
+            基于 Rust + Tauri 2 构建的跨平台客户端，支持 Windows、macOS、iOS、Android 与 Linux。
             界面遵循 Fluent 设计语言，播放器采用沉浸式竖屏信息流。
           </p>
 
@@ -230,20 +231,20 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
           <div className="mt-4 divide-y divide-s3">
             <button onClick={() => { navigator.clipboard?.writeText("https://github.com/Minireel/HGhub").then(() => toast("仓库地址已复制", "ok")).catch(() => {}); }}
               className="w-full flex items-center gap-2 py-2.5 text-left pressable">
-              <ILink size={15} className="text-mut" />
-              <span className="text-[12px] text-on/85">github.com/Minireel/HGhub</span>
-              <span className="ml-auto text-[10.5px] text-primary">复制</span>
+              <ILink size={15} className="shrink-0 text-mut" />
+              <span className="text-[12px] text-on/85 truncate">github.com/Minireel/HGhub</span>
+              <span className="ml-auto shrink-0 text-[10.5px] text-primary">复制</span>
             </button>
             <button onClick={() => { navigator.clipboard?.writeText("https://huangguoai.com").then(() => toast("站点地址已复制", "ok")).catch(() => {}); }}
               className="w-full flex items-center gap-2 py-2.5 text-left pressable">
-              <ILink size={15} className="text-mut" />
-              <span className="text-[12px] text-on/85">huangguoai.com</span>
-              <span className="ml-auto text-[10.5px] text-primary">复制</span>
+              <ILink size={15} className="shrink-0 text-mut" />
+              <span className="text-[12px] text-on/85 truncate">huangguoai.com</span>
+              <span className="ml-auto shrink-0 text-[10.5px] text-primary">复制</span>
             </button>
             <div className="flex items-center gap-2 py-2.5">
-              <IInfo size={15} className="text-mut" />
+              <IInfo size={15} className="shrink-0 text-mut" />
               <span className="text-[12px] text-on/85">PolyForm Noncommercial 1.0.0</span>
-              <span className="ml-auto text-[10.5px] text-mut">仅限非商业</span>
+              <span className="ml-auto shrink-0 text-[10.5px] text-mut">仅限非商业</span>
             </div>
           </div>
 
@@ -255,7 +256,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
         <div className="p-5">
           <div className="text-[14.5px] font-bold text-on">清理缓存</div>
           <p className="text-[12px] text-mut leading-relaxed mt-2">
-            只清除封面与播放列表缓存（解密图 / m3u8）。收藏、观看记录、搜索历史与登录状态都会保留。
+            只清除封面、播放列表、密钥与分片内存缓存。收藏、观看记录、搜索历史与登录状态都会保留。
           </p>
           <div className="flex gap-2 mt-5">
             <button onClick={() => setClearOpen(false)} className="flex-1 h-9 rounded-(--r-ctl) bg-s3 text-[12.5px] text-on/80 pressable">取消</button>

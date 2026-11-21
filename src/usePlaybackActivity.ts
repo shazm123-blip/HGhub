@@ -4,9 +4,13 @@ import type Hls from "hls.js";
 /** Keep asynchronous autoplay and error recovery subject to the latest page activity. */
 export function usePlaybackActivity(
   videoRef: RefObject<HTMLVideoElement | null>, hlsRef: RefObject<Hls | null>,
-  { active, autoPlay, src, trace }: { active: boolean; autoPlay: boolean; src: string; trace: (event: string, data?: Record<string, unknown>) => void },
+  { active, autoPlay, src, trace, onPlayRejected }: {
+    active: boolean; autoPlay: boolean; src: string;
+    trace: (event: string, data?: Record<string, unknown>) => void;
+    onPlayRejected?: (errorName?: string) => void;
+  },
 ) {
-  const latest = useRef({ active, trace }); latest.current = { active, trace };
+  const latest = useRef({ active, trace, onPlayRejected }); latest.current = { active, trace, onPlayRejected };
   const wanted = useRef(autoPlay);
   const mounted = useRef(true);
   const previous = useRef(active);
@@ -26,7 +30,12 @@ export function usePlaybackActivity(
     v.play().then(() => {
       // The page may have changed while play() was pending.
       if (!mounted.current || !latest.current.active) v.pause();
-    }).catch(e => latest.current.trace("play.rejected", { source, error_name: e?.name }));
+    }).catch(e => {
+      latest.current.trace("play.rejected", { source, error_name: e?.name });
+      if (e?.name !== "AbortError" && mounted.current && latest.current.active) {
+        latest.current.onPlayRejected?.(e?.name);
+      }
+    });
   }, []);
   const pause = useCallback((source = "handle") => {
     wanted.current = false;

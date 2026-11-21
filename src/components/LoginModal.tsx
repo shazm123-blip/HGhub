@@ -37,9 +37,9 @@ export default function LoginModal() {
   const body = (
     <div className="p-5">
       <div className="flex items-center gap-2 mb-3">
-        <span className="w-8 h-8 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ILogin size={16} /></span>
+        <span className="shrink-0 w-8 h-8 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ILogin size={16} /></span>
         <span className="text-[15px] font-bold text-on">{mode === "login" ? "登录 HGhub" : "注册 HGhub"}</span>
-        <button onClick={() => setLoginOpen(false)} className="ml-auto w-7 h-7 rounded-full bg-s4 flex items-center justify-center text-mut pressable">
+        <button onClick={() => setLoginOpen(false)} aria-label="关闭" className="ml-auto shrink-0 w-7 h-7 rounded-full bg-s4 flex items-center justify-center text-mut pressable">
           <IClose size={13} />
         </button>
       </div>
@@ -53,13 +53,15 @@ export default function LoginModal() {
 
       <div className="flex flex-col gap-2.5">
         <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="账号"
-          className="h-10 px-3.5 rounded-(--r-sm) bg-s4 text-[13px] text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]" />
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          className={`h-10 px-3.5 rounded-(--r-sm) bg-s4 ${isMobile ? "text-[16px]" : "text-[13px]"} text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]`} />
         <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="密码"
           onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-          className="h-10 px-3.5 rounded-(--r-sm) bg-s4 text-[13px] text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]" />
+          className={`h-10 px-3.5 rounded-(--r-sm) bg-s4 ${isMobile ? "text-[16px]" : "text-[13px]"} text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]`} />
         {mode === "register" && (
           <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="邮箱（可选）"
-            className="h-10 px-3.5 rounded-(--r-sm) bg-s4 text-[13px] text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]" />
+            type="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            className={`h-10 px-3.5 rounded-(--r-sm) bg-s4 ${isMobile ? "text-[16px]" : "text-[13px]"} text-on placeholder-mut outline-none focus:ring-2 focus:ring-[var(--p-primary)]`} />
         )}
         {err && <div className="text-[11.5px] text-danger">{err}</div>}
         <button onClick={submit} disabled={busy}
@@ -74,6 +76,6 @@ export default function LoginModal() {
   );
 
   return isMobile
-    ? <Sheet open={loginOpen} onClose={() => setLoginOpen(false)}>{body}</Sheet>
+    ? <Sheet open={loginOpen} onClose={() => setLoginOpen(false)} z="z-[60]">{body}</Sheet>
     : <Modal open={loginOpen} onClose={() => setLoginOpen(false)} width={360}>{body}</Modal>;
 }

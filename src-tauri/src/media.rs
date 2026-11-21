@@ -10,7 +10,7 @@ use aes::Aes128;
 use once_cell::sync::Lazy;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::http::{Response, StatusCode};
 
 /// 本平台自定义协议的完整基址。
@@ -26,35 +26,136 @@ pub const LOCAL_ORIGIN: &str = "hg://localhost";
 const IMG_KEY: &[u8] = b"f5d965df75336270";
 const IMG_IV: &[u8] = b"97b60394abc2fbe1";
 
-static IMG_CACHE: Lazy<Mutex<HashMap<String, Arc<Vec<u8>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-static PL_CACHE: Lazy<Mutex<HashMap<String, Arc<String>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-static KEY_CACHE: Lazy<Mutex<HashMap<String, (String, Arc<Vec<u8>>)>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-static SEG_CACHE: Lazy<Mutex<HashMap<String, (String, Arc<Vec<u8>>)>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+struct CacheEntry<V> {
+    tick: u64,
+    bytes: usize,
+    val: V,
+}
 
-const IMG_CACHE_MAX: usize = 240;
-const PL_CACHE_MAX: usize = 60;
-const KEY_CACHE_MAX: usize = 120;
-const SEG_CACHE_MAX: usize = 36;
-const SEG_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+struct LruCache<V> {
+    max_entries: usize,
+    max_bytes: usize,
+    total_bytes: usize,
+    tick: u64,
+    entries: HashMap<String, CacheEntry<V>>,
+}
 
-fn cache_put<V: Clone>(map: &Mutex<HashMap<String, V>>, key: String, val: V, max: usize) {
-    let mut m = map.lock().unwrap();
-    if m.len() >= max {
-        if let Some(k) = m.keys().next().cloned() {
-            m.remove(&k);
+impl<V: Clone> LruCache<V> {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            max_entries,
+            max_bytes,
+            total_bytes: 0,
+            tick: 0,
+            entries: HashMap::new(),
         }
     }
-    m.insert(key, val);
+
+    fn get(&mut self, key: &str) -> Option<V> {
+        let entry = self.entries.get_mut(key)?;
+        self.tick = self.tick.wrapping_add(1);
+        entry.tick = self.tick;
+        Some(entry.val.clone())
+    }
+
+    fn put(&mut self, key: String, val: V, bytes: usize) {
+        if self.max_entries == 0 || bytes > self.max_bytes {
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(old.bytes);
+        }
+        while self.entries.len() >= self.max_entries
+            || self.total_bytes.saturating_add(bytes) > self.max_bytes
+        {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.tick)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.bytes);
+            }
+        }
+        self.tick = self.tick.wrapping_add(1);
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.entries.insert(
+            key,
+            CacheEntry {
+                tick: self.tick,
+                bytes,
+                val,
+            },
+        );
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.total_bytes = 0;
+    }
+}
+
+type SegmentEntry = (String, Arc<Vec<u8>>);
+type CacheStore<V> = Lazy<Mutex<LruCache<V>>>;
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const IMG_CACHE_MAX: usize = 100;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const IMG_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const PL_CACHE_MAX: usize = 24;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const PL_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const KEY_CACHE_MAX: usize = 64;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const KEY_CACHE_MAX_BYTES: usize = 1 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const SEG_CACHE_MAX: usize = 8;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const SEG_CACHE_TOTAL_BYTES: usize = 12 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const SEG_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const IMG_CACHE_MAX: usize = 240;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const IMG_CACHE_MAX_BYTES: usize = 48 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const PL_CACHE_MAX: usize = 60;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const PL_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const KEY_CACHE_MAX: usize = 120;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const KEY_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const SEG_CACHE_MAX: usize = 36;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const SEG_CACHE_TOTAL_BYTES: usize = 48 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const SEG_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+static IMG_CACHE: CacheStore<Arc<Vec<u8>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(IMG_CACHE_MAX, IMG_CACHE_MAX_BYTES)));
+static PL_CACHE: CacheStore<Arc<String>> =
+    Lazy::new(|| Mutex::new(LruCache::new(PL_CACHE_MAX, PL_CACHE_MAX_BYTES)));
+static KEY_CACHE: CacheStore<SegmentEntry> =
+    Lazy::new(|| Mutex::new(LruCache::new(KEY_CACHE_MAX, KEY_CACHE_MAX_BYTES)));
+static SEG_CACHE: CacheStore<SegmentEntry> =
+    Lazy::new(|| Mutex::new(LruCache::new(SEG_CACHE_MAX, SEG_CACHE_TOTAL_BYTES)));
+
+fn lock_cache<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /* ───────────────────────── AES ───────────────────────── */
 
 fn aes_cbc_decrypt(data: &[u8]) -> Option<Vec<u8>> {
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         return None;
     }
     let cipher = Aes128::new_from_slice(IMG_KEY).ok()?;
@@ -76,10 +177,12 @@ fn aes_cbc_decrypt(data: &[u8]) -> Option<Vec<u8>> {
 
 fn strip_padding(mut buf: Vec<u8>) -> Vec<u8> {
     let pad = *buf.last().unwrap_or(&0) as usize;
-    if pad > 0 && pad <= 16 && buf.len() >= pad {
-        if buf[buf.len() - pad..].iter().all(|b| *b as usize == pad) {
-            buf.truncate(buf.len() - pad);
-        }
+    if pad > 0
+        && pad <= 16
+        && buf.len() >= pad
+        && buf[buf.len() - pad..].iter().all(|b| *b as usize == pad)
+    {
+        buf.truncate(buf.len() - pad);
     }
     buf
 }
@@ -100,26 +203,57 @@ fn image_kind(buf: &[u8]) -> Option<&'static str> {
     if buf.starts_with(b"RIFF") && &buf[8..12] == b"WEBP" {
         return Some("image/webp");
     }
+    if &buf[4..8] == b"ftyp" {
+        if matches!(&buf[8..12], b"avif" | b"avis") {
+            return Some("image/avif");
+        }
+        if matches!(
+            &buf[8..12],
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        ) {
+            return Some("image/heic");
+        }
+    }
+    if buf.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some("image/x-icon");
+    }
     None
+}
+
+fn decode_image_bytes(bytes: Vec<u8>) -> Result<(&'static str, Vec<u8>), String> {
+    if let Some(kind) = image_kind(&bytes) {
+        return Ok((kind, bytes));
+    }
+    let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
+    let plain = strip_padding(dec);
+    let kind = image_kind(&plain).ok_or_else(|| "封面内容格式无效".to_string())?;
+    Ok((kind, plain))
 }
 
 /// 取封面：命中缓存直接返回，否则下载并按需解密。
 pub async fn load_image(url: &str) -> Result<(String, Arc<Vec<u8>>), String> {
-    if let Some(hit) = IMG_CACHE.lock().unwrap().get(url).cloned() {
-        let kind = image_kind(&hit).unwrap_or("image/jpeg");
-        return Ok((kind.to_string(), hit));
-    }
-    let (_, bytes) = fetch_bytes(url).await?;
-    let plain = if image_kind(&bytes).is_some() {
-        bytes
+    let trimmed = url.trim();
+    let resolved = if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else if trimmed.starts_with('/') {
+        absolutize(&crate::net::base(), trimmed)
     } else {
-        let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
-        strip_padding(dec)
+        trimmed.to_string()
     };
-    let kind = image_kind(&plain).unwrap_or("image/jpeg").to_string();
+    if let Some(hit) = lock_cache(&IMG_CACHE).get(&resolved) {
+        if let Some(kind) = image_kind(&hit) {
+            return Ok((kind.to_string(), hit));
+        }
+    }
+    let (_, bytes) = fetch_bytes(&resolved).await?;
+    let (kind, plain) = decode_image_bytes(bytes)?;
+    let len = plain.len();
     let arc = Arc::new(plain);
-    cache_put(&IMG_CACHE, url.to_string(), arc.clone(), IMG_CACHE_MAX);
-    Ok((kind, arc))
+    lock_cache(&IMG_CACHE).put(resolved, arc.clone(), len);
+    Ok((kind.to_string(), arc))
 }
 
 /* ───────────────────────── HLS ───────────────────────── */
@@ -194,7 +328,7 @@ fn rewrite_uri_attr(line: &str, prefix: &str) -> String {
 /// 取 m3u8 并把 key / 子列表 / 分片地址改写到本地协议。
 pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, String> {
     let cache_key = format!("{prefix}|{url}");
-    if let Some(hit) = PL_CACHE.lock().unwrap().get(&cache_key).cloned() {
+    if let Some(hit) = lock_cache(&PL_CACHE).get(&cache_key) {
         return Ok(hit);
     }
     let (_, bytes) = fetch_bytes(url).await?;
@@ -202,8 +336,10 @@ pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, Strin
     if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
         return Err("响应不是 HLS 播放列表".into());
     }
-    let arc = Arc::new(rewrite_playlist(url, text, prefix));
-    cache_put(&PL_CACHE, cache_key, arc.clone(), PL_CACHE_MAX);
+    let rewritten = rewrite_playlist(url, text, prefix);
+    let len = rewritten.len();
+    let arc = Arc::new(rewritten);
+    lock_cache(&PL_CACHE).put(cache_key, arc.clone(), len);
     Ok(arc)
 }
 
@@ -261,10 +397,10 @@ fn absolutize_uri_in_attr(base: &str, line: &str) -> String {
 
 /// 加载分片或 AES Key（带内存缓存，避免拖动进度条时重复拉取同一 Key 或分片导致卡顿）。
 pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), String> {
-    if let Some((ctype, hit)) = KEY_CACHE.lock().unwrap().get(url).cloned() {
+    if let Some((ctype, hit)) = lock_cache(&KEY_CACHE).get(url) {
         return Ok((Some(ctype), hit));
     }
-    if let Some((ctype, hit)) = SEG_CACHE.lock().unwrap().get(url).cloned() {
+    if let Some((ctype, hit)) = lock_cache(&SEG_CACHE).get(url) {
         return Ok((Some(ctype), hit));
     }
     let (ctype, bytes) = fetch_bytes(url).await?;
@@ -281,19 +417,19 @@ pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), S
     let len = bytes.len();
     let arc = Arc::new(bytes);
     if len <= 65536 {
-        cache_put(&KEY_CACHE, url.to_string(), (mime.clone(), arc.clone()), KEY_CACHE_MAX);
+        lock_cache(&KEY_CACHE).put(url.to_string(), (mime.clone(), arc.clone()), len);
     } else if len <= SEG_CACHE_MAX_BYTES {
-        cache_put(&SEG_CACHE, url.to_string(), (mime.clone(), arc.clone()), SEG_CACHE_MAX);
+        lock_cache(&SEG_CACHE).put(url.to_string(), (mime.clone(), arc.clone()), len);
     }
     Ok((Some(mime), arc))
 }
 
 /// 清空封面 / 播放列表 / 分片内存缓存
 pub fn clear_caches() {
-    if let Ok(mut g) = IMG_CACHE.lock() { g.clear(); }
-    if let Ok(mut g) = PL_CACHE.lock() { g.clear(); }
-    if let Ok(mut g) = KEY_CACHE.lock() { g.clear(); }
-    if let Ok(mut g) = SEG_CACHE.lock() { g.clear(); }
+    lock_cache(&IMG_CACHE).clear();
+    lock_cache(&PL_CACHE).clear();
+    lock_cache(&KEY_CACHE).clear();
+    lock_cache(&SEG_CACHE).clear();
 }
 
 /* ───────────────────────── 协议响应 ───────────────────────── */
@@ -306,24 +442,124 @@ fn respond(status: u16, ctype: &str, body: Vec<u8>, cache: &str) -> Response<Vec
         .header("Content-Length", len)
         .header("Accept-Ranges", "bytes")
         .header("X-Content-Type-Options", "nosniff")
-        .header("Access-Control-Expose-Headers", "Content-Length, Content-Type, Accept-Ranges")
+        .header(
+            "Access-Control-Expose-Headers",
+            "Content-Length, Content-Type, Accept-Ranges, Content-Range",
+        )
         .header("Cache-Control", cache)
         .body(body)
         .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// 解析单段 HTTP `Range: bytes=...` 请求头；多段或非 bytes 请求回退完整响应，越界返回 `Err(())`。
+fn parse_byte_range(header: &str, total: usize) -> Result<Option<(usize, usize)>, ()> {
+    let trimmed = header.trim();
+    let Some((unit, spec)) = trimmed.split_once('=') else {
+        return Ok(None);
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return Ok(None);
+    }
+    let spec = spec.trim();
+    if spec.is_empty() || spec.contains(',') {
+        return Ok(None);
+    }
+    let Some((raw_start, raw_end)) = spec.split_once('-') else {
+        return Ok(None);
+    };
+    let raw_start = raw_start.trim();
+    let raw_end = raw_end.trim();
+    if raw_start.is_empty() && raw_end.is_empty() {
+        return Ok(None);
+    }
+    if total == 0 {
+        return Err(());
+    }
+    if raw_start.is_empty() {
+        let Ok(suffix) = raw_end.parse::<usize>() else {
+            return Ok(None);
+        };
+        if suffix == 0 {
+            return Err(());
+        }
+        let take = suffix.min(total);
+        return Ok(Some((total - take, total - 1)));
+    }
+    let Ok(start) = raw_start.parse::<usize>() else {
+        return Ok(None);
+    };
+    if start >= total {
+        return Err(());
+    }
+    if raw_end.is_empty() {
+        return Ok(Some((start, total - 1)));
+    }
+    let Ok(end) = raw_end.parse::<usize>() else {
+        return Ok(None);
+    };
+    if end < start {
+        return Err(());
+    }
+    Ok(Some((start, end.min(total - 1))))
+}
+
+fn respond_bytes(
+    ctype: &str,
+    body: &[u8],
+    cache: &str,
+    range: Option<&str>,
+) -> Response<Vec<u8>> {
+    if let Some(range_header) = range {
+        match parse_byte_range(range_header, body.len()) {
+            Ok(Some((start, end))) => {
+                let slice = body[start..=end].to_vec();
+                let len = slice.len().to_string();
+                let content_range = format!("bytes {start}-{end}/{}", body.len());
+                return Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header("Content-Type", ctype)
+                    .header("Content-Length", len)
+                    .header("Content-Range", content_range)
+                    .header("Accept-Ranges", "bytes")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header(
+                        "Access-Control-Expose-Headers",
+                        "Content-Length, Content-Type, Accept-Ranges, Content-Range",
+                    )
+                    .header("Cache-Control", cache)
+                    .body(slice)
+                    .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+            Err(()) => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("Content-Type", "text/plain")
+                    .header("Content-Length", "0")
+                    .header("Content-Range", format!("bytes */{}", body.len()))
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header("Cache-Control", "no-store")
+                    .body(Vec::new())
+                    .unwrap_or_else(|_| Response::new(Vec::new()));
+            }
+            Ok(None) => {}
+        }
+    }
+    respond(200, ctype, body.to_vec(), cache)
 }
 
 /// 主清单的子清单也经 /seg 返回：必须继续改写，不能把内层 URL 原样交给播放器。
 fn segment_response(
     target: &str,
     ctype: Option<&str>,
-    bytes: Vec<u8>,
+    bytes: &[u8],
     origin: &str,
+    range: Option<&str>,
 ) -> Response<Vec<u8>> {
     let playlist = ctype.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
         || bytes.starts_with(b"#EXTM3U")
         || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U");
     if playlist {
-        return match std::str::from_utf8(&bytes) {
+        return match std::str::from_utf8(bytes) {
             Ok(text) => respond(
                 200,
                 "application/vnd.apple.mpegurl",
@@ -339,11 +575,11 @@ fn segment_response(
             ),
         };
     }
-    respond(
-        200,
+    respond_bytes(
         ctype.unwrap_or("application/octet-stream"),
         bytes,
         "public, max-age=3600",
+        range,
     )
 }
 
@@ -351,7 +587,12 @@ fn segment_response(
 ///
 /// `origin` 是本平台自定义协议的完整基址，见 [`LOCAL_ORIGIN`]；用于改写 m3u8 里的
 /// 分片与 key 地址。正常情况下调用方直接传 [`LOCAL_ORIGIN`]。
-pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> {
+pub async fn handle(
+    path: &str,
+    query: &str,
+    origin: &str,
+    range: Option<&str>,
+) -> Response<Vec<u8>> {
     let target = query
         .split('&')
         .find_map(|kv| kv.strip_prefix("u="))
@@ -375,9 +616,7 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
     );
     let response = match path {
         "/img" => match load_image(&target).await {
-            Ok((kind, bytes)) => {
-                respond(200, &kind, bytes.as_ref().clone(), "public, max-age=86400")
-            }
+            Ok((kind, bytes)) => respond_bytes(&kind, bytes.as_ref(), "public, max-age=86400", range),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         "/hls" => match load_playlist(&target, origin).await {
@@ -391,7 +630,7 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
         },
         "/seg" => match load_segment(&target).await {
             Ok((ctype, bytes)) => {
-                segment_response(&target, ctype.as_deref(), bytes.as_ref().clone(), origin)
+                segment_response(&target, ctype.as_deref(), bytes.as_ref(), origin, range)
             }
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
@@ -436,8 +675,9 @@ mod tests {
         let response = segment_response(
             "https://cdn.example/master.m3u8",
             Some("application/octet-stream"),
-            text.as_bytes().to_vec(),
+            text.as_bytes(),
             LOCAL_ORIGIN,
+            None,
         );
         let body = std::str::from_utf8(response.body()).unwrap();
         assert_eq!(body.matches(&format!("{LOCAL_ORIGIN}/seg?u=")).count(), 4);
@@ -458,28 +698,93 @@ mod tests {
         let bom = segment_response(
             "https://cdn.example/list.m3u8",
             None,
-            b"\xef\xbb\xbf#EXTM3U\nsegment.ts\n".to_vec(),
+            b"\xef\xbb\xbf#EXTM3U\nsegment.ts\n",
             LOCAL_ORIGIN,
+            None,
         );
         assert!(bom.body().starts_with(b"#EXTM3U\n"));
     }
 
+    #[test]
+    fn lru_cache_enforces_entry_and_byte_limits_and_evicts_oldest() {
+        let mut cache = LruCache::new(3, 10);
+        cache.put("a".into(), vec![1; 4], 4);
+        cache.put("b".into(), vec![2; 4], 4);
+        // 命中 a，使其比 b 更新
+        assert_eq!(cache.get("a"), Some(vec![1; 4]));
+        // 插入 c(4B) 需要 4+4+4=12 > 10，应先淘汰最久未用的 b
+        cache.put("c".into(), vec![3; 4], 4);
+        assert!(cache.get("b").is_none());
+        assert_eq!(cache.get("a"), Some(vec![1; 4]));
+        assert_eq!(cache.get("c"), Some(vec![3; 4]));
+        assert_eq!(cache.total_bytes, 8);
+        // 覆盖已有键不应错误淘汰其他键
+        cache.put("a".into(), vec![9; 5], 5);
+        assert_eq!(cache.total_bytes, 9);
+        assert_eq!(cache.get("c"), Some(vec![3; 4]));
+        // 超出单缓存总字节上限的条目跳过写入
+        cache.put("oversize".into(), vec![0; 11], 11);
+        assert!(cache.get("oversize").is_none());
+    }
+
+    #[test]
+    fn range_requests_return_206_and_416_correctly() {
+        let payload = b"0123456789";
+        let full = respond_bytes("video/mp4", payload, "public, max-age=3600", None);
+        assert_eq!(full.status(), 200);
+        assert_eq!(full.body(), payload);
+
+        let r1 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=2-5"));
+        assert_eq!(r1.status(), 206);
+        assert_eq!(r1.body(), b"2345");
+        assert_eq!(r1.headers()["Content-Range"], "bytes 2-5/10");
+        assert_eq!(r1.headers()["Content-Length"], "4");
+
+        let r2 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=7-99"));
+        assert_eq!(r2.status(), 206);
+        assert_eq!(r2.body(), b"789");
+        assert_eq!(r2.headers()["Content-Range"], "bytes 7-9/10");
+
+        let r3 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=-3"));
+        assert_eq!(r3.status(), 206);
+        assert_eq!(r3.body(), b"789");
+        assert_eq!(r3.headers()["Content-Range"], "bytes 7-9/10");
+
+        let bad = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=10-12"));
+        assert_eq!(bad.status(), 416);
+        assert_eq!(bad.headers()["Content-Range"], "bytes */10");
+
+        let rev = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=6-2"));
+        assert_eq!(rev.status(), 416);
+
+        let empty_bad = respond_bytes("video/mp4", b"", "public, max-age=3600", Some("bytes=0-0"));
+        assert_eq!(empty_bad.status(), 416);
+        assert_eq!(empty_bad.headers()["Content-Range"], "bytes */0");
+    }
+
     /// 联网测试：默认跳过，手动跑 `cargo test --lib -- --ignored`。
-    /// 依赖上游 `/api/videos/117/play` 返回的实时播放地址。
+    /// 依赖上游 `/api/videos/117/episodes/3/playback` 返回的实时播放地址。
     #[tokio::test]
     #[ignore = "联网测试：依赖上游实时播放地址，手动用 --ignored 运行"]
     async fn live_play_chain() {
         use crate::net::edge;
         let play = edge(
             &crate::net::base(),
-            "GET",
-            "/api/videos/117/play?ep=3&page_texts=0",
-            None,
+            "POST",
+            "/api/videos/117/episodes/3/playback",
+            Some(serde_json::json!({})),
             None,
         )
         .await
         .expect("play api");
-        let url = play["video_url"].as_str().expect("video_url").to_string();
+        let url = play
+            .get("streams")
+            .and_then(|s| s.get("main"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| play.get("video_url").and_then(|v| v.as_str()))
+            .expect("video_url")
+            .to_string();
         println!("play url: {}", &url[..url.len().min(90)]);
         let (_, bytes) = fetch_bytes(&url).await.expect("fetch playlist");
         let text = String::from_utf8_lossy(&bytes);
@@ -489,7 +794,7 @@ mod tests {
             &text[..text.len().min(160)]
         );
         let q = format!("u={}", enc(&url));
-        let resp = handle("/hls", &q, LOCAL_ORIGIN).await;
+        let resp = handle("/hls", &q, LOCAL_ORIGIN, None).await;
         let body = String::from_utf8_lossy(resp.body()).to_string();
         println!("proxied status={} len={}", resp.status(), body.len());
         assert!(body.contains("#EXTM3U"));
@@ -501,7 +806,7 @@ mod tests {
             .to_string();
         println!("seg line: {}", &seg_line[..seg_line.len().min(120)]);
         let seg_q = seg_line.split("?u=").nth(1).unwrap();
-        let seg = handle("/seg", &format!("u={seg_q}"), LOCAL_ORIGIN).await;
+        let seg = handle("/seg", &format!("u={seg_q}"), LOCAL_ORIGIN, None).await;
         println!("segment status={} len={}", seg.status(), seg.body().len());
         assert_eq!(seg.status(), 200);
         assert!(seg.body().len() > 1000);
@@ -564,6 +869,48 @@ mod tests {
         let stripped = strip_padding(decrypted);
         assert_eq!(stripped, plain);
         assert_eq!(image_kind(&stripped), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn image_kind_recognizes_avif_heic_bmp_and_rejects_html() {
+        let mut avif = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00".to_vec();
+        avif.extend_from_slice(&[0u8; 8]);
+        assert_eq!(image_kind(&avif), Some("image/avif"));
+        let mut heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00".to_vec();
+        heic.extend_from_slice(&[0u8; 8]);
+        assert_eq!(image_kind(&heic), Some("image/heic"));
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&[0u8; 16]);
+        assert_eq!(image_kind(&bmp), Some("image/bmp"));
+        assert_eq!(image_kind(b"<html><body>404</body></html>"), None);
+    }
+
+    #[test]
+    fn decode_image_bytes_rejects_invalid_decrypted_payload() {
+        use aes::cipher::BlockEncrypt;
+
+        let html = b"<html><body>not-an-image</body></html>";
+        let mut buf = html.to_vec();
+        let pad = 16 - html.len() % 16;
+        buf.extend(std::iter::repeat_n(pad as u8, pad));
+
+        let cipher = Aes128::new_from_slice(IMG_KEY).expect("key");
+        let mut prev = [0u8; 16];
+        prev.copy_from_slice(IMG_IV);
+        let mut encrypted = Vec::with_capacity(buf.len());
+        for chunk in buf.chunks(16) {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(chunk);
+            for i in 0..16 {
+                block[i] ^= prev[i];
+            }
+            let mut out_block = block;
+            cipher.encrypt_block((&mut out_block).into());
+            encrypted.extend_from_slice(&out_block);
+            prev = out_block;
+        }
+        assert!(decode_image_bytes(encrypted).is_err());
+        assert!(decode_image_bytes(b"<html>403</html>".to_vec()).is_err());
     }
 
     /// 联网测试：默认跳过。封面地址带时效签名，不能硬编码进仓库，

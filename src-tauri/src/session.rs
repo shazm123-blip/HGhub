@@ -1,8 +1,13 @@
 //! 会话持久化：token + 用户资料存到应用数据目录。
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+
+fn lock_state<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Session {
@@ -42,10 +47,43 @@ mod tests {
     #[test]
     fn legacy_sessions_are_not_assigned_to_current_line() {
         let store = SessionStore::new();
-        *store.current.lock().unwrap() =
+        *lock_state(&store.current) =
             serde_json::from_str(r#"{"token":"legacy","user":{"id":1}}"#).unwrap();
         assert_eq!(store.token("https://huangguoai.com"), None);
         assert!(store.user("https://huangguoai.com").is_null());
+    }
+
+    #[test]
+    fn persists_atomically_with_restricted_permissions() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hghub-session-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SessionStore::new();
+        store.bind(dir.clone());
+        store.set(
+            "https://huangguoai.com",
+            "secret-token".into(),
+            json!({"id": 42}),
+        );
+        let session_path = dir.join("session.json");
+        assert!(session_path.exists());
+        assert!(!dir.join("session.json.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&session_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let reloaded = SessionStore::new();
+        reloaded.bind(dir.clone());
+        assert_eq!(
+            reloaded.token("https://huangguoai.com").as_deref(),
+            Some("secret-token")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -67,19 +105,19 @@ impl SessionStore {
         path.push("session.json");
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(sess) = serde_json::from_str::<Session>(&text) {
-                *self.current.lock().unwrap() = sess;
+                *lock_state(&self.current) = sess;
             }
         }
-        *self.file.lock().unwrap() = Some(path);
+        *lock_state(&self.file) = Some(path);
     }
 
     pub fn token(&self, origin: &str) -> Option<String> {
-        let cur = self.current.lock().unwrap();
+        let cur = lock_state(&self.current);
         (cur.origin == origin && !cur.token.is_empty()).then(|| cur.token.clone())
     }
 
     pub fn user(&self, origin: &str) -> serde_json::Value {
-        let cur = self.current.lock().unwrap();
+        let cur = lock_state(&self.current);
         if cur.origin == origin && !cur.token.is_empty() {
             cur.user.clone()
         } else {
@@ -89,7 +127,7 @@ impl SessionStore {
 
     pub fn set(&self, origin: &str, token: String, user: serde_json::Value) {
         {
-            let mut cur = self.current.lock().unwrap();
+            let mut cur = lock_state(&self.current);
             cur.origin = origin.to_string();
             cur.token = token;
             cur.user = user;
@@ -99,7 +137,7 @@ impl SessionStore {
 
     pub fn clear(&self) {
         {
-            let mut cur = self.current.lock().unwrap();
+            let mut cur = lock_state(&self.current);
             cur.token.clear();
             cur.origin.clear();
             cur.user = serde_json::Value::Null;
@@ -108,10 +146,35 @@ impl SessionStore {
     }
 
     fn persist(&self) {
-        let snapshot = self.current.lock().unwrap().clone();
-        if let Some(path) = self.file.lock().unwrap().as_ref() {
+        let snapshot = lock_state(&self.current).clone();
+        let path = lock_state(&self.file).clone();
+        if let Some(path) = path {
             if let Ok(text) = serde_json::to_string_pretty(&snapshot) {
-                let _ = std::fs::write(path, text);
+                let tmp = path.with_extension("json.tmp");
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create(true).truncate(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                if let Ok(mut file) = opts.open(&tmp) {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &tmp,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
+                    if file.write_all(text.as_bytes()).is_ok() && file.sync_all().is_ok() {
+                        drop(file);
+                        let _ = std::fs::rename(&tmp, &path);
+                    } else {
+                        drop(file);
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+                }
             }
         }
     }

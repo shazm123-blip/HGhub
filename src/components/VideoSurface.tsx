@@ -1,6 +1,6 @@
-import React, { useEffect, useImperativeHandle, useRef, forwardRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, forwardRef, useState } from "react";
 import Hls from "hls.js";
-import { isLocalMedia, platform, playlist } from "../api";
+import { isLocalMedia, mediaUrl, platform } from "../api";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 
@@ -36,7 +36,9 @@ type Props = {
   rate?: number;
   onTime?: (t: number) => void;
   onDuration?: (d: number) => void;
+  onBuffered?: (ratio: number) => void;
   onSize?: (w: number, h: number) => void;
+  onCanPlay?: (paused: boolean) => void;
   onPlaying?: () => void;
   onPause?: () => void;
   onWaiting?: () => void;
@@ -51,17 +53,49 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   { src, poster, autoPlay = true, active = true, diagnosticContext = {}, muted = false, loop = false, fit = "contain",
     scale = 1, panX = 0, panY = 0, isGesturing = false,
     volume = 1, rate = 1,
-    onTime, onDuration, onSize, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
+    onTime, onDuration, onBuffered, onSize, onCanPlay, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const recoverCountRef = useRef(0);
   const recoverTimerRef = useRef<number | null>(null);
+  const seekCleanupRef = useRef<(() => void) | null>(null);
   const lastSizeRef = useRef({ w: 0, h: 0 });
   const [ready, setReady] = useState(false);
   const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { ...diagnosticContext, active, resource: mediaResource(src) });
-  const activity = usePlaybackActivity(videoRef, hlsRef, { active, autoPlay, src, trace });
+  const activity = usePlaybackActivity(videoRef, hlsRef, {
+    active,
+    autoPlay,
+    src,
+    trace,
+    onPlayRejected: () => {
+      onCanPlay?.(true);
+      onPause?.();
+    },
+  });
+
+  const reportBuffered = (v: HTMLVideoElement) => {
+    if (!onBuffered) return;
+    const dur = v.duration;
+    if (!dur || !Number.isFinite(dur) || dur <= 0 || v.buffered.length === 0) {
+      onBuffered(0);
+      return;
+    }
+    let end = 0;
+    const cur = v.currentTime || 0;
+    for (let i = 0; i < v.buffered.length; i++) {
+      const s = v.buffered.start(i);
+      const e = v.buffered.end(i);
+      if (cur >= s - 0.5 && cur <= e + 0.5) {
+        end = Math.max(end, e);
+      }
+    }
+    if (end === 0) {
+      end = v.buffered.end(v.buffered.length - 1);
+    }
+    onBuffered(Math.max(0, Math.min(1, end / dur)));
+  };
 
   const reportSizeAndDuration = (v: HTMLVideoElement) => {
     if (v.duration && Number.isFinite(v.duration) && v.duration > 0) {
@@ -78,6 +112,8 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const safeSeek = (t: number, sourceOrAutoResume: string | boolean = "handle") => {
     const v = videoRef.current;
     if (!v || !Number.isFinite(t)) return;
+    seekCleanupRef.current?.();
+    seekCleanupRef.current = null;
     const dur = v.duration && Number.isFinite(v.duration) ? v.duration : 0;
     const target = dur > 0 ? Math.max(0, Math.min(dur - 0.15, t)) : Math.max(0, t);
     const source = typeof sourceOrAutoResume === "string" ? sourceOrAutoResume : "handle";
@@ -85,7 +121,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
     requestSeek(target, source);
     onWaiting?.();
-    if (hlsRef.current) {
+    if (hlsRef.current && !hlsRef.current.loadingEnabled) {
       try {
         hlsRef.current.startLoad(target);
       } catch { /* ignore */ }
@@ -100,20 +136,22 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
     if (autoResume && activity.isActive()) {
       const resumeOnce = () => {
-        v.removeEventListener("seeked", resumeOnce);
-        v.removeEventListener("canplay", resumeOnce);
-        if (activity.isActive()) v.play().catch(() => {});
+        seekCleanupRef.current?.();
+        seekCleanupRef.current = null;
+        if (activity.isActive()) activity.play("seek_resume", true);
       };
-      v.addEventListener("seeked", resumeOnce, { once: true });
-      v.addEventListener("canplay", resumeOnce, { once: true });
-      // 兜底：若 350ms 内已经就绪则直接播
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (v.readyState >= 2 && v.paused && activity.isActive()) {
-          v.removeEventListener("seeked", resumeOnce);
-          v.removeEventListener("canplay", resumeOnce);
-          v.play().catch(() => {});
+          resumeOnce();
         }
       }, 350);
+      v.addEventListener("seeked", resumeOnce, { once: true });
+      v.addEventListener("canplay", resumeOnce, { once: true });
+      seekCleanupRef.current = () => {
+        window.clearTimeout(timer);
+        v.removeEventListener("seeked", resumeOnce);
+        v.removeEventListener("canplay", resumeOnce);
+      };
     }
   };
 
@@ -135,6 +173,8 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     reload: () => {
       const v = videoRef.current;
       if (!v) return;
+      seekCleanupRef.current?.();
+      seekCleanupRef.current = null;
       recoverCountRef.current = 0;
       const cur = v.currentTime || 0;
       if (hlsRef.current) {
@@ -158,6 +198,8 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     setReady(false);
     recoverCountRef.current = 0;
     lastSizeRef.current = { w: 0, h: 0 };
+    seekCleanupRef.current?.();
+    seekCleanupRef.current = null;
     if (recoverTimerRef.current) {
       window.clearTimeout(recoverTimerRef.current);
       recoverTimerRef.current = null;
@@ -165,7 +207,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
     const proxied = isLocalMedia(src);
-    const url = proxied ? src : playlist(src);
+    const url = proxied ? src : mediaUrl(src);
     const useHls = !url.includes("/seg?u=");
     const isIos = platform === "ios";
     trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay, resource: mediaResource(src) });
@@ -192,9 +234,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         preferManagedMediaSource: false,
         autoStartLoad: false,
         lowLatencyMode: false,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        backBufferLength: 30,
+        maxBufferLength: isIos ? 12 : 30,
+        maxMaxBufferLength: isIos ? 20 : 60,
+        maxBufferSize: isIos ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
+        backBufferLength: isIos ? 6 : 30,
         maxBufferHole: 0.5,
         highBufferWatchdogPeriod: 2,
         nudgeOffset: 0.25,
@@ -206,7 +249,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         fragLoadingTimeOut: 25000,
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 400,
-        startFragPrefetch: true,
+        startFragPrefetch: !isIos,
       });
       hlsRef.current = hls;
       observeHls(hls, trace);
@@ -219,27 +262,14 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       hls.on(Hls.Events.FRAG_BUFFERED, () => {
         recoverCountRef.current = 0;
         setReady(true);
+        if (videoRef.current) reportBuffered(videoRef.current);
       });
       hls.on(Hls.Events.ERROR, (_e, data) => {
-        // 非致命卡顿错误（常见于拖动进度条后缓冲空洞）：主动触发加载与微调跳帧
-        if (!data.fatal) {
-          if (
-            activity.isActive() && (
-              data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
-              data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
-              data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
-            )
-          ) {
-            try {
-              hls.startLoad(video.currentTime || -1);
-            } catch { /* ignore */ }
-          }
-          return;
-        }
+        if (!data.fatal) return;
 
         if (!activity.isActive()) return;
 
-        // 致命错误：优先自动重连/恢复解码器，最多静默恢复 4 次，避免拖动进度条直接弹报错层
+        // 致命错误：优先自动重连/恢复解码器，最多静默恢复 4 次；耗尽后停止重试，交由外层报错/手动重载。
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           if (recoverCountRef.current < 4) {
             recoverCountRef.current += 1;
@@ -249,25 +279,25 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
               if (!hlsRef.current || !activity.isActive()) return;
               try {
                 hlsRef.current.startLoad(video.currentTime || -1);
-                if (!video.paused) video.play().catch(() => {});
+                if (!video.paused) activity.play("hls_network_recover", true);
               } catch { /* ignore */ }
             }, delay);
             return;
           }
+          try { hls.stopLoad(); } catch { /* ignore */ }
           onError?.(`${data.type}/${data.details}`);
-          hls.startLoad();
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           if (recoverCountRef.current < 4) {
             recoverCountRef.current += 1;
             try {
               if (recoverCountRef.current === 2) hls.swapAudioCodec();
               hls.recoverMediaError();
-              video.play().catch(() => {});
+              if (!video.paused) activity.play("hls_media_recover", true);
             } catch { /* ignore */ }
             return;
           }
+          try { hls.stopLoad(); } catch { /* ignore */ }
           onError?.(`${data.type}/${data.details}`);
-          hls.recoverMediaError();
         } else {
           onError?.(`${data.type}/${data.details}`);
           hls.destroy();
@@ -281,11 +311,19 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
     return () => {
       trace("source.cleanup");
+      seekCleanupRef.current?.();
+      seekCleanupRef.current = null;
       if (recoverTimerRef.current) {
         window.clearTimeout(recoverTimerRef.current);
         recoverTimerRef.current = null;
       }
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      video.pause();
+      if (video.hasAttribute("src") || video.querySelector("source")) {
+        video.removeAttribute("src");
+        video.querySelectorAll("source").forEach((s) => s.remove());
+        try { video.load(); } catch { /* ignore */ }
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
@@ -346,21 +384,29 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
           setReady(true);
           reapply(v);
           reportSizeAndDuration(v);
+          reportBuffered(v);
+          onCanPlay?.(v.paused);
         }}
         onCanPlay={(e) => {
           const v = e.target as HTMLVideoElement;
           setReady(true);
           reportSizeAndDuration(v);
+          onCanPlay?.(v.paused);
         }}
+        onProgress={(e) => reportBuffered(e.target as HTMLVideoElement)}
         onTimeUpdate={(e) => {
           const v = e.target as HTMLVideoElement;
           onTime?.(v.currentTime);
+          reportBuffered(v);
           if (lastSizeRef.current.w === 0 && v.videoWidth > 0) {
             reportSizeAndDuration(v);
           }
+          if (v.duration > 5 && v.currentTime < v.duration - 2) {
+            nearEndFiredRef.current = false;
+          }
           // 借鉴 stclock1988/hghub-ios：部分 HLS 流容器标称时长比最后一个分片略长 0.5~1.2s，
           // 接近片尾时提前复位准备，若卡在片尾则自动触发连播
-          if (!loop && !nearEndFiredRef.current && activity.isActive() && v.duration > 5 && v.currentTime >= v.duration - 0.35) {
+          if (!loop && !nearEndFiredRef.current && !v.seeking && !v.paused && activity.isActive() && v.duration > 5 && v.currentTime >= v.duration - 0.35) {
             nearEndFiredRef.current = true;
             onEnded?.();
           }
@@ -374,7 +420,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         onPause={() => onPause?.()}
         onWaiting={(e) => {
           const v = e.target as HTMLVideoElement;
-          if (!loop && !nearEndFiredRef.current && activity.isActive() && v.duration > 5 && v.currentTime >= v.duration - 1.5) {
+          if (!loop && !nearEndFiredRef.current && !v.seeking && !v.paused && activity.isActive() && v.duration > 5 && v.currentTime >= v.duration - 0.5) {
             nearEndFiredRef.current = true;
             onEnded?.();
             return;
@@ -390,6 +436,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         onSeeking={() => onWaiting?.()}
         onSeeked={() => {
           const v = videoRef.current;
+          if (v) reportBuffered(v);
           if (v && !v.paused && activity.isActive()) onPlaying?.();
         }}
         onEnded={() => {

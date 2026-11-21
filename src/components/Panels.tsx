@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, fmt, cover as imageCover } from "../api";
+import { api, fmt, isMobile, cover as imageCover } from "../api";
 import { handleArticleClick, sanitizeHtml } from "../html";
 import type { Comment, CommentPage, Episode } from "../types";
 import { useStore } from "../store";
@@ -59,13 +59,22 @@ export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const mounted = useRef(true);
+  const reqSeq = useRef(0);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const load = async (p: number) => {
+    const seq = ++reqSeq.current;
     setLoading(true);
     try {
       const res: CommentPage | null = kind === "post"
         ? await api.postComments(videoId, p, 20)
         : await api.comments(videoId, ep, p, 20);
+      if (!mounted.current || seq !== reqSeq.current) return;
       setItems((prev) => {
         const base = p === 1 ? [] : prev;
         const seen = new Set(base.map((x) => x.id));
@@ -74,28 +83,36 @@ export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
       setPage(p);
       setPages(res?.pagination?.pages || 1);
     } catch {
-      if (p === 1) setItems([]);
+      if (mounted.current && seq === reqSeq.current && p === 1) setItems([]);
     } finally {
-      setLoading(false);
+      if (mounted.current && seq === reqSeq.current) setLoading(false);
     }
   };
 
-  useEffect(() => { load(1); /* eslint-disable-next-line */ }, [videoId, ep, kind]);
+  useEffect(() => {
+    setItems([]);
+    setPage(0);
+    setPages(1);
+    void load(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, ep, kind]);
 
   const send = async () => {
+    if (kind === "post") return;
     const t = text.trim();
     if (!t) return;
     if (!user) { setLoginOpen(true); return; }
     setSending(true);
     try {
       await api.commentSend(videoId, ep, t);
+      if (!mounted.current) return;
       setText("");
       toast("评论已提交，审核通过后展示", "ok");
-      load(1);
+      void load(1);
     } catch (e) {
       toast((e as Error).message || "评论失败", "info");
     } finally {
-      setSending(false);
+      if (mounted.current) setSending(false);
     }
   };
 
@@ -103,7 +120,9 @@ export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
     <div className="flex flex-col h-full">
       <div className="shrink-0 flex items-center gap-2 px-4 h-12">
         <span className="text-[13.5px] font-bold text-on">评论</span>
-        <span className="text-[10.5px] text-mut">{fmt(total)} · 第 {ep} 集</span>
+        <span className="text-[10.5px] text-mut">
+          {kind === "post" ? `${fmt(total)} 条` : `${fmt(total)} · 第 ${ep} 集`}
+        </span>
         <button onClick={onClose} aria-label="关闭" className="ml-auto w-7 h-7 rounded-full bg-s3 flex items-center justify-center text-mut pressable">
           <IClose size={13} />
         </button>
@@ -140,17 +159,24 @@ export function CommentsPanel({ videoId, ep, total, kind = "video", onClose }: {
         )}
       </div>
 
-      <form className="shrink-0 flex items-center gap-2 px-3 py-2.5 bg-s2/70" onSubmit={(e) => { e.preventDefault(); send(); }}>
-        <Avatar size={30} name={user?.nickname || "我"} hue={322} />
-        <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
-          onFocus={() => { if (!user) setLoginOpen(true); }}
-          placeholder={user ? "说点什么…" : "登录后参与评论"}
-          className="flex-1 min-w-0 h-9 rounded-(--r-ctl) bg-s4 px-3.5 text-[12.5px] text-on placeholder-dim outline-none focus:bg-s3" />
-        <button type="submit" disabled={!text.trim() || sending}
-          className={`w-9 h-9 rounded-full flex items-center justify-center pressable ${text.trim() ? "brand-grad glow-neon" : "bg-s3 text-dim"}`}>
-          {sending ? <span className="w-4 h-4 spinner" /> : <ISendF size={16} />}
-        </button>
-      </form>
+      {kind === "post" ? (
+        <div className="shrink-0 px-4 py-2.5 text-[11.5px] text-dim bg-s2/70 text-center">
+          吃瓜帖暂不支持客户端发表评论
+        </div>
+      ) : (
+        <form className="shrink-0 flex items-center gap-2 px-3 py-2.5 bg-s2/70" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+          <Avatar size={30} name={user?.nickname || "我"} hue={322} />
+          <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
+            readOnly={!user}
+            onFocus={(e) => { if (!user) { e.currentTarget.blur(); setLoginOpen(true); } }}
+            placeholder={user ? "说点什么…" : "登录后参与评论"}
+            className={`flex-1 min-w-0 h-9 rounded-(--r-ctl) bg-s4 px-3.5 ${isMobile ? "text-[16px]" : "text-[12.5px]"} text-on placeholder-dim outline-none focus:bg-s3`} />
+          <button type="submit" disabled={!text.trim() || sending}
+            className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center pressable ${text.trim() ? "brand-grad glow-neon" : "bg-s3 text-dim"}`}>
+            {sending ? <span className="w-4 h-4 spinner" /> : <ISendF size={16} />}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

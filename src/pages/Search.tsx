@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, fmt } from "../api";
+import { api, isMobile } from "../api";
 import type { RankItem, VideoCard } from "../types";
 import { useStore } from "../store";
 import { Masonry, RankRow } from "../components/cards";
@@ -9,7 +9,7 @@ import { IBack, IClose, IFireF, IRefresh, ISearch, ITrophy } from "../icons";
 const HOT_TAGS = ["都市", "逆袭", "古风", "系统", "后宫", "校园", "仙侠", "职场", "大男主", "御姐", "脑洞", "奇幻"];
 
 export default function Search({ active, wide }: { active: boolean; wide: boolean }) {
-  const { push, searchHist, addSearch, clearSearchHist, toast } = useStore();
+  const { push, searchHist, addSearch, clearSearchHist } = useStore();
   const [q, setQ] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [items, setItems] = useState<VideoCard[]>([]);
@@ -19,18 +19,27 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
+  const reqSeq = useRef(0);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    if (active && !/Android/i.test(navigator.userAgent)) inputRef.current?.focus();
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (active && !isMobile) inputRef.current?.focus();
   }, [active]);
 
   const run = async (keyword: string, p: number) => {
-    if (busy.current) return;
-    if (p > pages && p > 1) return;
+    if (p > 1 && (busy.current || p > pages)) return;
+    const seq = ++reqSeq.current;
     busy.current = true;
     setLoading(true);
+    setErr(null);
     try {
       const res = await api.search(keyword, p, 20);
+      if (!mounted.current || seq !== reqSeq.current) return;
       setItems((prev) => {
         const base = p === 1 ? [] : prev;
         const seen = new Set(base.map((x) => x.id));
@@ -40,21 +49,27 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
       setPages(res?.pagination?.pages || 1);
       setErr(null);
     } catch (e) {
-      setErr((e as Error).message || "搜索失败");
+      if (mounted.current && seq === reqSeq.current) {
+        setErr((e as Error).message || "搜索失败");
+      }
     } finally {
-      busy.current = false;
-      setLoading(false);
+      if (seq === reqSeq.current) {
+        busy.current = false;
+        if (mounted.current) setLoading(false);
+      }
     }
   };
 
   const submit = (keyword: string) => {
     const k = keyword.trim();
     if (!k) return;
+    inputRef.current?.blur();
     setSubmitted(k);
     addSearch(k);
     setItems([]);
+    setPage(0);
     setPages(1);
-    run(k, 1);
+    void run(k, 1);
   };
 
   const querying = submitted.length > 0;
@@ -66,17 +81,17 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
         <form className="flex-1 flex items-center gap-2 h-11 rounded-(--r-ctl) bg-s3 px-3.5 focus-within:bg-s4 transition-colors"
           onSubmit={(e) => { e.preventDefault(); submit(q); }}>
           <ISearch size={17} className="text-mut shrink-0" />
-          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索短剧、作者、题材…"
-            className="flex-1 min-w-0 bg-transparent text-[13.5px] text-on placeholder-dim outline-none" />
-          {q && <button type="button" onClick={() => { setQ(""); setSubmitted(""); setItems([]); }} className="w-5 h-5 rounded-full bg-s4 flex items-center justify-center text-mut pressable"><IClose size={11} /></button>}
+          <input ref={inputRef} type="search" enterKeyHint="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索短剧、作者、题材…"
+            className={`flex-1 min-w-0 bg-transparent ${isMobile ? "text-[16px]" : "text-[13.5px]"} text-on placeholder-dim outline-none`} />
+          {q && <button type="button" aria-label="清除搜索" onClick={() => { setQ(""); setSubmitted(""); setItems([]); }} className="shrink-0 w-7 h-7 rounded-full bg-s4 flex items-center justify-center text-mut pressable"><IClose size={12} /></button>}
         </form>
         <button onClick={() => push({ kind: "ranks" })} aria-label="排行榜"
-          className="w-11 h-11 rounded-(--r-sm) flex items-center justify-center bg-primary text-on-primary pressable elev-2">
+          className="shrink-0 w-11 h-11 rounded-(--r-sm) flex items-center justify-center bg-primary text-on-primary pressable elev-2">
           <ITrophy size={19} />
         </button>
       </div>
 
-      <div className="flex-1 scroll-y px-4 pb-24">
+      <div className="flex-1 scroll-y px-4" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
         {!querying ? (
           <>
             {searchHist.length > 0 && (
@@ -120,7 +135,13 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             <div className="text-[11.5px] text-mut mt-1 mb-2.5">「{submitted}」共 <span className="text-primary font-bold">{items.length}</span> 条结果</div>
             {items.length ? (
               <>
-                <Masonry videos={items} wide={wide} onOpen={(v) => push({ kind: "feed", videoIds: items.map((x) => x.id), index: items.findIndex((x) => x.id === v.id), title: `搜索 · ${submitted}` })} />
+                <Masonry videos={items} wide={wide} onOpen={(v) => push({
+                  kind: "feed",
+                  videoIds: items.map((x) => x.id),
+                  index: items.findIndex((x) => x.id === v.id),
+                  title: `搜索 · ${submitted}`,
+                  covers: Object.fromEntries(items.map((x) => [x.id, x.cover])),
+                })} />
                 <div className="flex justify-center py-4">
                   {loading ? <div className="w-6 h-6 spinner" />
                     : page < pages ? (
@@ -131,8 +152,10 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             ) : loading ? (
               <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
             ) : (
-              <Empty icon={<ISearch size={26} />} title={err || "没有找到相关内容"} sub="换个关键词试试，比如「都市」「逆袭」"
-                action="看看热榜" onAction={() => push({ kind: "ranks" })} />
+              <Empty icon={<ISearch size={26} />} title={err || "没有找到相关内容"}
+                sub={err ? "请检查网络或重试" : "换个关键词试试，比如「都市」「逆袭」"}
+                action={err ? "重试" : "看看热榜"}
+                onAction={() => (err ? void run(submitted, 1) : push({ kind: "ranks" }))} />
             )}
           </>
         )}
@@ -153,16 +176,26 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
   const [tab, setTab] = useState<"hot" | "recommend" | "potential">("hot");
   const [items, setItems] = useState<RankItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setErr(null);
     api.rank(tab)
       .then((res) => { if (alive) setItems(res?.items || []); })
-      .catch((e) => { if (alive) { setItems([]); toast((e as Error).message || "榜单加载失败", "info"); } })
+      .catch((e) => {
+        if (alive) {
+          const msg = (e as Error).message || "榜单加载失败";
+          setItems([]);
+          setErr(msg);
+          toast(msg, "info");
+        }
+      })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [tab, toast]);
+  }, [tab, toast, reloadTick]);
 
   const max = Math.max(1, ...items.map((x) => x.metric_value || 0));
   const meta = RANK_TABS.find((t) => t.k === tab)!;
@@ -172,11 +205,11 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
       <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
         <div className="relative px-3 pt-2 pb-4">
-          <button onClick={onBack} className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
+          <button onClick={onBack} aria-label="返回" className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
           <div className="px-2 mt-1 flex items-end justify-between">
             <div>
               <div className="flex items-center gap-2">
-                <span className="w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ITrophy size={20} /></span>
+                <span className="shrink-0 w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ITrophy size={20} /></span>
                 <span className="text-[24px] font-bold tracking-wide text-on">HG 热榜</span>
               </div>
               <div className="text-[11px] text-mut mt-1">{meta.desc} · 每 10 分钟更新</div>
@@ -185,20 +218,29 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
           <div className="flex bg-s3 rounded-(--r-ctl) p-1 mt-3">
             {RANK_TABS.map((t) => (
               <button key={t.k} onClick={() => setTab(t.k)}
-                className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold transition-all ${tab === t.k ? "tonal elev-1" : "text-mut"}`}>{t.label}</button>
+                className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold transition-all ${tab === t.k ? "tonal elev-1" : "text-mut"}`}
+                style={tab === t.k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{t.label}</button>
             ))}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 scroll-y px-3.5 pt-3 pb-8">
+      <div className="flex-1 scroll-y px-3.5 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {loading ? (
           <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
         ) : items.length ? (
           items.map((it) => (
             <RankRow key={`${it.video_id}-${it.rank}`} item={it} metricMax={max}
-              onOpen={() => push({ kind: "feed", videoIds: items.map((x) => x.video_id), index: items.findIndex((x) => x.video_id === it.video_id), title: "HG 热榜" })} />
+              onOpen={() => push({
+                kind: "feed",
+                videoIds: items.map((x) => x.video_id),
+                index: items.findIndex((x) => x.video_id === it.video_id),
+                title: "HG 热榜",
+                covers: Object.fromEntries(items.map((x) => [x.video_id, x.cover])),
+              })} />
           ))
+        ) : err ? (
+          <Empty icon={<ITrophy size={26} />} title="榜单加载失败" sub={err} action="重试" onAction={() => setReloadTick((n) => n + 1)} />
         ) : (
           <Empty icon={<ITrophy size={26} />} title="榜单暂时为空" sub="稍后再来看看，或者去首页刷刷推荐" />
         )}

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Feed from "../src/components/Feed";
 import { AppProvider } from "../src/store";

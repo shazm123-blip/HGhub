@@ -14,8 +14,15 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const busy = useRef(false);
+  const mounted = useRef(true);
   const sentinel = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const loadMore = async () => {
     if (busy.current || page >= pages) return;
@@ -24,42 +31,47 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
     try {
       const next = page + 1;
       const res = await api.posts(next, 20);
+      if (!mounted.current) return;
       setItems((prev) => {
         const seen = new Set(prev.map((x) => x.id));
         return [...prev, ...(res?.items || []).filter((x) => !seen.has(x.id))];
       });
       setPage(next);
       setPages(res?.pagination?.pages || next);
-    } catch { /* ignore */ } finally {
+      setErr(null);
+    } catch (e) {
+      if (mounted.current) setErr((e as Error).message || "加载失败");
+    } finally {
       busy.current = false;
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   };
 
-  useEffect(() => { loadMore(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { void loadMore(); /* eslint-disable-next-line */ }, []);
   useEffect(() => {
     const el = sentinel.current;
-    if (!el) return;
-    const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) loadMore(); }, { rootMargin: "600px" });
+    if (!el || err || page >= pages) return undefined;
+    const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) void loadMore(); }, { rootMargin: "600px" });
     io.observe(el);
     return () => io.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pages]);
+  }, [page, pages, err]);
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
-      <div className="shrink-0 flex items-center gap-2 px-2 bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
-        <button onClick={onBack} className="w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
-        <span className="text-[14px] font-bold text-on">黄果吃瓜</span>
-        <span className="text-[10.5px] text-mut ml-1">圈内爆料</span>
+      <div className="shrink-0 bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
+        <div className="h-11 flex items-center gap-2 px-2">
+          <button onClick={onBack} aria-label="返回" className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
+          <span className="text-[14px] font-bold text-on">黄果吃瓜</span>
+          <span className="text-[10.5px] text-mut ml-1">圈内爆料</span>
+        </div>
       </div>
-      <div className="flex-1 scroll-y px-3 pt-3 pb-8">
+      <div className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {items.length ? (
-          <div className={`${wide ? "columns-3 xl:columns-4" : "columns-2"} gap-2`}>
+          <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
             {items.map((p) => (
               <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="w-full break-inside-avoid mb-2 relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block"
-                style={{ paddingTop: "128%" }}>
+                className="w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
                 <Img src={p.cover} />
                 <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-2">
@@ -73,11 +85,19 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
           </div>
         ) : loading ? (
           <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+        ) : err ? (
+          <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore()} />
         ) : (
           <Empty icon={<IFireF size={26} />} title="暂无吃瓜内容" sub="稍后再来看看" />
         )}
         <div ref={sentinel} className="h-10" />
         {loading && <div className="flex justify-center py-2"><div className="w-6 h-6 spinner" /></div>}
+        {!loading && err && items.length > 0 && (
+          <div className="flex flex-col items-center gap-2 py-3 text-[11.5px] text-mut">
+            <span>{err}</span>
+            <button onClick={() => void loadMore()} className="px-4 h-7 rounded-(--r-ctl) bg-s3 text-primary pressable">重试加载</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -87,10 +107,11 @@ const isHtml = (s: string) => /<(p|div|br|img|h[1-6]|ul|ol|li|blockquote|span|st
 
 /* ================= 吃瓜详情（网页式浏览） ================= */
 export function PostDetail({ id, onBack, active = true }: { id: number; onBack: () => void; active?: boolean }) {
-  const { toast, strictSecurity, muted, setMuted } = useStore();
+  const { toast, strictSecurity, muted, setMuted, volume } = useStore();
   const [post, setPost] = useState<(Post & { content?: string; video_url?: string }) | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [play, setPlay] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
   const content = post?.content || "";
   const safeHtml = useMemo(() => sanitizeHtml(content), [content, strictSecurity]);
   const openSafeLink = (url: string) => {
@@ -101,29 +122,31 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
 
   useEffect(() => {
     let alive = true;
+    setErr(null);
+    setPost(null);
     api.post(id)
       .then((p) => { if (alive) setPost(p); })
       .catch((e) => { if (alive) setErr((e as Error).message || "加载失败"); });
     return () => { alive = false; };
-  }, [id]);
+  }, [id, reloadTick]);
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
       <div className="shrink-0 flex items-center gap-2 px-2 bg-s1" style={{ paddingTop: isMobile ? "var(--sat, 0px)" : 0, height: isMobile ? "calc(44px + var(--sat, 0px))" : 44 }}>
-        <button onClick={onBack} className="w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
+        <button onClick={onBack} aria-label="返回" className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
         <span className="text-[13.5px] font-semibold text-on">吃瓜详情</span>
       </div>
 
-      <div className="flex-1 scroll-y pb-8">
+      <div className="flex-1 scroll-y" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {err ? (
-          <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} />
+          <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => setReloadTick((n) => n + 1)} />
         ) : !post ? (
           <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
         ) : (
           <>
-            <div className="relative w-full bg-black" style={{ height: "min(40vh, 360px)" }}>
+            <div className="relative w-full bg-black" style={{ height: "min(40dvh, 360px)" }}>
               {play && post.video_url ? (
-                <Player src={post.video_url} poster={cover(post.cover)} autoPlay active={active} controls muted={muted}
+                <Player src={post.video_url} poster={cover(post.cover)} autoPlay active={active} controls muted={muted} volume={volume}
                   onToggleMute={() => setMuted((m) => !m)} diagnosticContext={{ video_id: id, active }} className="w-full h-full" />
               ) : (
                 <button onClick={() => { if (post.video_url) setPlay(true); else toast("该帖子没有视频", "info"); }} className="absolute inset-0">

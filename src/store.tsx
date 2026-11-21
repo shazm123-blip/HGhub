@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, platform as envPlatform } from "./api";
+import { api, platform as envPlatform, setApiBase } from "./api";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./html";
 import type { User } from "./types";
 
@@ -20,6 +20,7 @@ export type FeedContext = {
   /** 从观看记录续播：起始集数与秒数 */
   startEp?: number;
   startTime?: number;
+  covers?: Record<number, string>;
 };
 
 export type Page =
@@ -31,7 +32,7 @@ export type Page =
   | { kind: "post"; key: string; id: number };
 
 export type PageInput =
-  | { kind: "feed"; videoIds: number[]; index: number; title: string; source?: string; feedKind?: "video" | "post"; startEp?: number; startTime?: number }
+  | { kind: "feed"; videoIds: number[]; index: number; title: string; source?: string; feedKind?: "video" | "post"; startEp?: number; startTime?: number; covers?: Record<number, string> }
   | { kind: "channel"; cate: string; name: string }
   | { kind: "ranks" }
   | { kind: "settings" }
@@ -101,6 +102,8 @@ function readTheme(): Theme {
 function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle("theme-light", theme === "light");
   document.documentElement.style.colorScheme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", theme === "light" ? "#f9f9f9" : "#1a1a1a");
 }
 
 type Store = {
@@ -128,6 +131,7 @@ type Store = {
   volume: number; setVolume: (v: number) => void;
   searchHist: string[]; addSearch: (q: string) => void; clearSearchHist: () => void;
   strictSecurity: boolean; strictSecurityReady: boolean; securityPending: boolean; cliRelaxed: boolean; setStrictSecurity: (on: boolean) => Promise<void>;
+  lineVersion: number; bumpLineVersion: () => void;
   toasts: Toast[]; toast: (msg: string, icon?: Toast["icon"]) => void;
 };
 
@@ -137,6 +141,8 @@ let seq = 0;
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [p, setP] = useState<Persist>(loadPersist);
+  const pRef = useRef(p);
+  pRef.current = p;
   const [theme, setThemeState] = useState<Theme>(readTheme);
   const [tab, setTabRaw] = useState<Tab>("home");
   const [stack, setStack] = useState<Page[]>([]);
@@ -150,7 +156,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [cliRelaxed, setCliRelaxed] = useState(false);
   const [strictSecurityReady, setStrictSecurityReady] = useState(false);
   const [securityPending, setSecurityPending] = useState(false);
+  const [lineVersion, setLineVersion] = useState(0);
   const toastSeq = useRef(0);
+  const bumpLineVersion = useCallback(() => setLineVersion((v) => v + 1), []);
 
   useEffect(() => {
     applyTheme(theme);
@@ -164,6 +172,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     api.boot()
       .then((r) => {
+        if (r.base) setApiBase(r.base);
         if (r.user && (r.user as User).id) setUser(r.user as User);
         if (typeof r.strict_security === "boolean") {
           setStrictSecurityState(r.strict_security);
@@ -193,36 +202,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2200);
   }, []);
 
-  const setTab = useCallback((t: Tab) => { setTabRaw(t); setStack([]); setCleanState(false); }, []);
-  const push = useCallback((pg: PageInput) => {
-    setCleanState(false);
-    setStack((s) => [...s, { ...pg, key: `p${++seq}` } as Page]);
-  }, []);
-  const pop = useCallback(() => {
-    setCleanState(false);
-    setStack((s) => s.slice(0, -1));
+  const setFs = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setFsState((prev) => {
+      const next = typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v;
+      if (!next) {
+        invoke("set_orientation", { landscape: false }).catch(() => {});
+        try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
+      }
+      return next;
+    });
   }, []);
 
+  const setTab = useCallback((t: Tab) => { setTabRaw(t); setStack([]); setCleanState(false); setFs(false); }, [setFs]);
+  const push = useCallback((pg: PageInput) => {
+    setCleanState(false);
+    setFs(false);
+    setStack((s) => [...s, { ...pg, key: `p${++seq}` } as Page]);
+  }, [setFs]);
+  const pop = useCallback(() => {
+    setCleanState(false);
+    setFs(false);
+    setStack((s) => s.slice(0, -1));
+  }, [setFs]);
+
   const toggleLikeLocal = useCallback((id: number) => {
-    let on = false;
+    const on = !pRef.current.likes.includes(id);
+    pRef.current = {
+      ...pRef.current,
+      likes: on ? [id, ...pRef.current.likes] : pRef.current.likes.filter((x) => x !== id),
+    };
     setP((s) => {
-      on = !s.likes.includes(id);
+      const has = s.likes.includes(id);
+      if (on === has) return s;
       return { ...s, likes: on ? [id, ...s.likes] : s.likes.filter((x) => x !== id) };
     });
     return on;
   }, []);
   const toggleFavLocal = useCallback((id: number) => {
-    let on = false;
+    const on = !pRef.current.favs.includes(id);
+    pRef.current = {
+      ...pRef.current,
+      favs: on ? [id, ...pRef.current.favs] : pRef.current.favs.filter((x) => x !== id),
+    };
     setP((s) => {
-      on = !s.favs.includes(id);
+      const has = s.favs.includes(id);
+      if (on === has) return s;
       return { ...s, favs: on ? [id, ...s.favs] : s.favs.filter((x) => x !== id) };
     });
     return on;
   }, []);
   const toggleFollowLocal = useCallback((uid: number) => {
-    let on = false;
+    const on = !pRef.current.follows.includes(uid);
+    pRef.current = {
+      ...pRef.current,
+      follows: on ? [uid, ...pRef.current.follows] : pRef.current.follows.filter((x) => x !== uid),
+    };
     setP((s) => {
-      on = !s.follows.includes(uid);
+      const has = s.follows.includes(uid);
+      if (on === has) return s;
       return { ...s, follows: on ? [uid, ...s.follows] : s.follows.filter((x) => x !== uid) };
     });
     return on;
@@ -260,17 +297,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTheaterState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
   }, []);
 
-  const setFs = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
-    setFsState((prev) => {
-      const next = typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v;
-      if (!next) {
-        invoke("set_orientation", { landscape: false }).catch(() => {});
-        try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
-      }
-      return next;
-    });
-  }, []);
-
   const setClean = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setCleanState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
   }, []);
@@ -300,11 +326,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     muteOnStartup: p.muteOnStartup, setMuteOnStartup,
     searchHist: p.searchHist, addSearch, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
+    lineVersion, bumpLineVersion,
     toasts, toast,
   }), [theme, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);
+    lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

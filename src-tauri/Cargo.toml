@@ -58,7 +58,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
 
 [profile.release]
-panic = "abort"
+# Apple wry 依赖 objc2::exception::catch 捕获已取消 WKURLSchemeTask 的 ObjC 异常，
+# 若设为 panic = "abort" 则外层异常无法被捕获，直接触发 SIGABRT 闪退。
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"

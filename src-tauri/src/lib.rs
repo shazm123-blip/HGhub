@@ -29,7 +29,7 @@ fn allowed_dev_host(host: &str) -> bool {
 fn allowed_frontend_origin(origin: &str) -> bool {
     if matches!(
         origin,
-        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost" | "null"
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
     ) {
         return true;
     }
@@ -41,6 +41,17 @@ fn allowed_frontend_origin(origin: &str) -> bool {
                 && (!network_policy::strict_security()
                     || u.host_str().is_some_and(allowed_dev_host))
         })
+}
+
+fn allowed_navigation_url(url: &url::Url, strict: bool) -> bool {
+    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || allowed_frontend_origin(&url.origin().ascii_serialization())
+        || (!strict && matches!(url.scheme(), "http" | "https"))
+}
+
+fn allowed_media_protocol_origin(origin: &str) -> bool {
+    allowed_frontend_origin(origin)
+        || (cfg!(any(target_os = "macos", target_os = "ios")) && origin == "null")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -69,17 +80,19 @@ pub fn run() {
         .plugin(
             tauri::plugin::Builder::<_, ()>::new("navigation-guard")
                 .on_navigation(|_webview, url| {
-                    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-                        || allowed_frontend_origin(&url.origin().ascii_serialization())
-                        || (!network_policy::strict_security()
-                            && matches!(url.scheme(), "http" | "https"))
+                    allowed_navigation_url(url, network_policy::strict_security())
                 })
                 .build(),
         )
-        .register_asynchronous_uri_scheme_protocol("hg", |_app, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("hg", |ctx, request, responder| {
             let request_origin = request
                 .headers()
                 .get("Origin")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let range_header = request
+                .headers()
+                .get("Range")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             if playback_log::enabled() {
@@ -87,15 +100,21 @@ pub fn run() {
                     .find(|(key, _)| key == "u")
                     .map(|(_, value)| playback_log::resource_id(&value));
                 let route = match request.uri().path() { "/hls" => "playlist", "/seg" => "segment_or_key", "/img" => "image", _ => "unknown" };
-                let range = request.headers().get("Range").and_then(|v| v.to_str().ok())
+                let range = range_header
+                    .as_deref()
                     .filter(|v| v.len() <= 100 && v.bytes().all(|b| b.is_ascii_digit() || b"bytes=,- ".contains(&b)));
-                let origin_kind = match request_origin.as_deref() { None => "missing", Some("null") => "null", Some(origin) if allowed_frontend_origin(origin) => "app", _ => "other" };
+                let origin_kind = match request_origin.as_deref() {
+                    None => "missing",
+                    Some("null") => "null",
+                    Some(origin) if allowed_frontend_origin(origin) => "app",
+                    _ => "other",
+                };
                 playback_log::record("protocol.request", serde_json::json!({"resource": resource, "route": route, "method": request.method().as_str(), "range": range, "origin_kind": origin_kind}));
             }
             if network_policy::strict_security()
                 && request_origin
                     .as_deref()
-                    .is_some_and(|origin| !allowed_frontend_origin(origin))
+                    .is_some_and(|origin| !allowed_media_protocol_origin(origin))
             {
                 playback_log::record("security.origin_denied", serde_json::json!({"origin_null": request_origin.as_deref() == Some("null")}));
                 responder.respond(
@@ -106,6 +125,10 @@ pub fn run() {
                 );
                 return;
             }
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
+            let app_handle = ctx.app_handle().clone();
+            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+            let _ = &ctx;
             let uri = request.uri().clone();
             let path = uri.path().to_string();
             let query = uri.query().unwrap_or("").to_string();
@@ -113,7 +136,13 @@ pub fn run() {
             // （Windows/Android 是 http://<scheme>.localhost，macOS/iOS/Linux 是 <scheme>://localhost）。
             // 它同时是 m3u8 分片/key 改写用的前缀，必须与前端 src/api.ts 的 LOCAL 一致。
             tauri::async_runtime::spawn(async move {
-                let mut resp = media::handle(&path, &query, media::LOCAL_ORIGIN).await;
+                let mut resp = media::handle(
+                    &path,
+                    &query,
+                    media::LOCAL_ORIGIN,
+                    range_header.as_deref(),
+                )
+                .await;
                 if let Some(origin) =
                     request_origin.and_then(|s| tauri::http::HeaderValue::from_str(&s).ok())
                 {
@@ -121,13 +150,23 @@ pub fn run() {
                         .insert("Access-Control-Allow-Origin", origin);
                     resp.headers_mut()
                         .insert("Vary", tauri::http::HeaderValue::from_static("Origin"));
-                } else {
+                } else if cfg!(any(target_os = "macos", target_os = "ios")) {
                     resp.headers_mut().insert(
                         "Access-Control-Allow-Origin",
                         tauri::http::HeaderValue::from_static("*"),
                     );
                 }
-                responder.respond(resp);
+                // WebKit WKURLSchemeTask 必须在主线程回调，且 Tokio 工作线程没有 ObjC @autoreleasepool
+                #[cfg(any(target_os = "ios", target_os = "macos"))]
+                {
+                    let _ = app_handle.run_on_main_thread(move || {
+                        responder.respond(resp);
+                    });
+                }
+                #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+                {
+                    responder.respond(resp);
+                }
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -170,4 +209,58 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{allowed_media_protocol_origin, allowed_navigation_url};
+
+    #[test]
+    fn navigation_guard_blocks_opaque_and_external_origins() {
+        for raw in [
+            "file:///etc/passwd",
+            "data:text/html,test",
+            "javascript:alert(1)",
+            "blob:https://example.com/1",
+            "about:blank",
+            "https://evil.example/",
+        ] {
+            let url = url::Url::parse(raw).unwrap();
+            assert!(!allowed_navigation_url(&url, true), "{raw}");
+        }
+        for raw in [
+            "tauri://localhost/",
+            "http://tauri.localhost/",
+            "https://tauri.localhost/index.html",
+        ] {
+            let url = url::Url::parse(raw).unwrap();
+            assert!(allowed_navigation_url(&url, true), "{raw}");
+        }
+        let external = url::Url::parse("https://example.com/").unwrap();
+        assert!(allowed_navigation_url(&external, false));
+        let opaque = url::Url::parse("data:text/html,test").unwrap();
+        assert!(!allowed_navigation_url(&opaque, false));
+    }
+
+    #[test]
+    fn media_protocol_origin_enforces_app_origin_with_apple_null_compat() {
+        assert!(allowed_media_protocol_origin("tauri://localhost"));
+        assert!(allowed_media_protocol_origin("http://tauri.localhost"));
+        assert!(allowed_media_protocol_origin("https://tauri.localhost"));
+        assert!(!allowed_media_protocol_origin("https://evil.example"));
+        assert!(!allowed_media_protocol_origin("http://hg.localhost"));
+        let expected_null = cfg!(any(target_os = "macos", target_os = "ios"));
+        assert_eq!(allowed_media_protocol_origin("null"), expected_null);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn objc_exceptions_are_catchable_without_aborting() {
+        let obj = std::panic::AssertUnwindSafe(objc2::runtime::NSObject::new());
+        let caught = objc2::exception::catch(|| {
+            let _: objc2::rc::Retained<objc2::runtime::NSObject> =
+                unsafe { objc2::msg_send![&*obj, copy] };
+        });
+        assert!(caught.is_err());
+    }
 }

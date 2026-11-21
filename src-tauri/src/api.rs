@@ -36,7 +36,15 @@ impl Api {
             .session
             .token(&origin)
             .ok_or_else(|| "请先登录".to_string())?;
-        edge(&origin, method, path, body, Some(&token)).await
+        match edge(&origin, method, path, body, Some(&token)).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if e.starts_with("HTTP 401") && base() == origin {
+                    self.session.clear();
+                }
+                Err(e)
+            }
+        }
     }
 }
 
@@ -45,7 +53,9 @@ impl Api {
 pub async fn debug_log(app: tauri::AppHandle, msg: String) -> Result<(), String> {
     use tauri::Manager;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    crate::logging::append_debug(&dir, &msg)
+    tokio::task::spawn_blocking(move || crate::logging::append_debug(&dir, &msg))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 网络自检：系统代理 / DNS / 连通性快照，用于远程定位「打不开」。
@@ -96,25 +106,53 @@ pub async fn line_probe(urls: Vec<String>) -> Result<Value, String> {
 
 const REPO: &str = "Minireel/HGhub";
 
-fn ver_parts(v: &str) -> Vec<u64> {
-    v.trim()
-        .trim_start_matches(['v', 'V'])
-        .split(['.', '-', '+'])
-        .map(|s| s.trim().parse::<u64>().unwrap_or(0))
-        .collect()
+fn split_semver(v: &str) -> (Vec<u64>, Option<&str>) {
+    let s = v.trim().trim_start_matches(['v', 'V']);
+    let s = s.split('+').next().unwrap_or(s);
+    let (core_str, pre) = match s.split_once('-') {
+        Some((c, p)) => (c, Some(p).filter(|x| !x.is_empty())),
+        None => (s, None),
+    };
+    let core = core_str
+        .split('.')
+        .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+        .collect();
+    (core, pre)
 }
 
-/// 只比较数字段：`v1.2.0` > `1.1.9`；解析不出的段按 0 处理。
+fn cmp_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa: Vec<&str> = a.split('.').collect();
+    let pb: Vec<&str> = b.split('.').collect();
+    for (x, y) in pa.iter().zip(pb.iter()) {
+        let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+            (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+            (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+            (Err(_), Err(_)) => x.cmp(y),
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    pa.len().cmp(&pb.len())
+}
+
+/// 按 SemVer 语义比较版本：`v1.2.0` > `1.1.9`；同主版本下正式版大于预发布版。
 fn is_newer(latest: &str, current: &str) -> bool {
-    let (a, b) = (ver_parts(latest), ver_parts(current));
-    for i in 0..a.len().max(b.len()) {
-        let x = *a.get(i).unwrap_or(&0);
-        let y = *b.get(i).unwrap_or(&0);
+    let (a_core, a_pre) = split_semver(latest);
+    let (b_core, b_pre) = split_semver(current);
+    for i in 0..a_core.len().max(b_core.len()) {
+        let x = *a_core.get(i).unwrap_or(&0);
+        let y = *b_core.get(i).unwrap_or(&0);
         if x != y {
             return x > y;
         }
     }
-    false
+    match (a_pre, b_pre) {
+        (None, Some(_)) => true,
+        (Some(_), None) | (None, None) => false,
+        (Some(ap), Some(bp)) => cmp_prerelease(ap, bp) == std::cmp::Ordering::Greater,
+    }
 }
 
 /// 对比 GitHub Release 的 tag 与当前版本（未认证 60 次/小时/IP，够用）。
@@ -142,7 +180,9 @@ pub async fn check_update() -> Result<Value, String> {
         return Err(format!("GitHub 返回 HTTP {status}"));
     }
 
-    let v: Value = resp.json().await.map_err(|e| crate::net::err_text(&e))?;
+    let bytes = crate::net::read_bytes_limited(resp, crate::net::MAX_TEXT_BYTES).await?;
+    let v: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("更新响应 JSON 无效: {e}"))?;
     let tag = v
         .get("tag_name")
         .and_then(|x| x.as_str())
@@ -208,6 +248,8 @@ fn request_ios_orientation(landscape: bool) {
             std::mem::transmute(objc_msgSend as *const ());
         let msg1_usize: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void =
             std::mem::transmute(objc_msgSend as *const ());
+        let msg1_isize: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
         let msg2_ptr: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) =
             std::mem::transmute(objc_msgSend as *const ());
         let msg1_void: unsafe extern "C" fn(*mut c_void, *mut c_void) =
@@ -215,13 +257,15 @@ fn request_ios_orientation(landscape: bool) {
 
         // 1. iOS 16+ UIWindowScene.requestGeometryUpdateWithPreferences:errorHandler:
         // UIInterfaceOrientationMaskPortrait = 1 << 1 = 2
-        // UIInterfaceOrientationMaskLandscapeRight = 1 << 3 = 8
-        let mask: usize = if landscape { 8 } else { 2 };
+        // UIInterfaceOrientationMaskLandscape = (1 << 3) | (1 << 4) = 24
+        let mask: usize = if landscape { (1 << 3) | (1 << 4) } else { 1 << 1 };
         let prefs_cls = objc_getClass(b"UIWindowSceneGeometryPreferencesIOS\0".as_ptr() as *const c_char);
         let app_cls = objc_getClass(b"UIApplication\0".as_ptr() as *const c_char);
+        let mut updated_via_scene = false;
         if !prefs_cls.is_null() && !app_cls.is_null() {
             let sel_alloc = sel_registerName(b"alloc\0".as_ptr() as *const c_char);
             let sel_init = sel_registerName(b"initWithInterfaceOrientations:\0".as_ptr() as *const c_char);
+            let sel_release = sel_registerName(b"release\0".as_ptr() as *const c_char);
             let raw_prefs = msg0(prefs_cls, sel_alloc);
             let prefs = if !raw_prefs.is_null() {
                 msg1_usize(raw_prefs, sel_init, mask)
@@ -251,14 +295,22 @@ fn request_ios_orientation(landscape: bool) {
                             let scene = msg1_usize(arr, sel_at, i);
                             if !scene.is_null() && msg_responds(scene, sel_responds, sel_req) {
                                 msg2_ptr(scene, sel_req, prefs, std::ptr::null_mut());
+                                updated_via_scene = true;
                             }
                         }
                     }
                 }
             }
+            if !prefs.is_null() {
+                msg1_void(prefs, sel_release);
+            }
         }
 
-        // 2. Fallback: UIDevice setValue:forKey:@"orientation" + attemptRotationToDeviceOrientation
+        if updated_via_scene {
+            return;
+        }
+
+        // 2. Fallback (iOS < 16): UIDevice setValue:forKey:@"orientation" + attemptRotationToDeviceOrientation
         let dev_cls = objc_getClass(b"UIDevice\0".as_ptr() as *const c_char);
         let num_cls = objc_getClass(b"NSNumber\0".as_ptr() as *const c_char);
         let str_cls = objc_getClass(b"NSString\0".as_ptr() as *const c_char);
@@ -267,8 +319,8 @@ fn request_ios_orientation(landscape: bool) {
             let sel_cur = sel_registerName(b"currentDevice\0".as_ptr() as *const c_char);
             let dev = msg0(dev_cls, sel_cur);
             let sel_num = sel_registerName(b"numberWithInteger:\0".as_ptr() as *const c_char);
-            let orient_val: usize = if landscape { 3 } else { 1 };
-            let num = msg1_usize(num_cls, sel_num, orient_val);
+            let orient_val: isize = if landscape { 3 } else { 1 };
+            let num = msg1_isize(num_cls, sel_num, orient_val);
             let sel_str = sel_registerName(b"stringWithUTF8String:\0".as_ptr() as *const c_char);
             let msg_str: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void =
                 std::mem::transmute(objc_msgSend as *const ());
@@ -396,7 +448,15 @@ pub async fn api_logout(state: State<'_, Api>) -> Result<Value, String> {
 pub async fn api_me(state: State<'_, Api>) -> Result<Value, String> {
     let origin = base();
     let token = state.session.token(&origin);
-    let me = edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await?;
+    let me = match edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await {
+        Ok(v) => v,
+        Err(e) => {
+            if token.is_some() && e.starts_with("HTTP 401") && base() == origin {
+                state.session.clear();
+            }
+            return Err(e);
+        }
+    };
     if base() != origin {
         return Err("读取账号期间线路已变化".into());
     }
@@ -415,6 +475,19 @@ pub async fn api_feed(state: State<'_, Api>, page: u32, size: u32) -> Result<Val
         .await
 }
 
+fn validate_category_slug(cate: &str) -> Result<&str, String> {
+    let trimmed = cate.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 64
+        || !trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("分类标识无效".to_string());
+    }
+    Ok(trimmed)
+}
+
 #[tauri::command]
 pub async fn api_category(
     state: State<'_, Api>,
@@ -422,6 +495,7 @@ pub async fn api_category(
     page: u32,
     size: u32,
 ) -> Result<Value, String> {
+    let cate = validate_category_slug(&cate)?;
     state
         .get(&format!(
             "/api/videos/category/{cate}?page={page}&size={size}"
@@ -626,7 +700,7 @@ pub async fn api_post_comments(
 }
 #[cfg(test)]
 mod tests {
-    use super::{has_play_url, is_newer, normalize_play_info};
+    use super::{has_play_url, is_newer, normalize_play_info, validate_category_slug};
     use serde_json::{json, Value};
 
     #[test]
@@ -700,5 +774,18 @@ mod tests {
         assert!(!is_newer("v1.0.1", "1.0.1"));
         assert!(!is_newer("v0.9.9", "1.0.1"));
         assert!(!is_newer("", "1.0.1"));
+        assert!(!is_newer("v1.2.0-beta.1", "1.2.0"));
+        assert!(!is_newer("v1.2.0-ios", "1.2.0"));
+        assert!(is_newer("v1.2.0", "1.2.0-rc.1"));
+        assert!(is_newer("v1.2.0-beta.2", "1.2.0-beta.1"));
+    }
+
+    #[test]
+    fn category_slug_validation_rejects_traversal_and_query_injection() {
+        assert_eq!(validate_category_slug("ai-duanju").unwrap(), "ai-duanju");
+        assert_eq!(validate_category_slug("cat_01").unwrap(), "cat_01");
+        for bad in ["", "   ", "../admin", "a/b", "ai?page=1", "ai#frag", "中文"] {
+            assert!(validate_category_slug(bad).is_err(), "{bad}");
+        }
     }
 }

@@ -34,7 +34,14 @@
 }
 .plat-windows { --r-sm: 4px; --r-md: 8px; --r-lg: 8px; --r-ctl: 4px; --nav-h: 0px; }
 .plat-macos { --r-sm: 6px; --r-md: 10px; --r-lg: 12px; --r-ctl: 6px; --nav-h: 0px; }
+.plat-linux { --r-sm: 6px; --r-md: 10px; --r-lg: 12px; --r-ctl: 6px; --nav-h: 0px; }
 .plat-ios { --r-sm: 10px; --r-md: 14px; --r-lg: 18px; --r-ctl: 999px; -webkit-touch-callout: none; }
+.plat-ios, .plat-android {
+  --sat: max(env(safe-area-inset-top, 0px), 12px);
+  --sab: max(env(safe-area-inset-bottom, 0px), 16px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
 html.theme-light {
   color-scheme: light;
   --p-canvas: #f3f3f3;
@@ -102,11 +109,11 @@ body {
 }
 input, textarea { user-select: text; }
 img, video { -webkit-user-drag: none; }
-button { cursor: pointer; font-family: inherit; }
+button { cursor: pointer; font-family: inherit; touch-action: manipulation; }
 
 /* ——— 原生质感滚动条 ——— */
-.scroll-y { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--p-s4) transparent; }
-.scroll-x { overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.scroll-y { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: var(--p-s4) transparent; }
+.scroll-x { overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .scroll-x::-webkit-scrollbar { display: none; }
 .scroll-y::-webkit-scrollbar { width: 5px; }
 .scroll-y::-webkit-scrollbar-track { background: transparent; }
@@ -168,7 +175,7 @@ html.theme-light .elev-3 { box-shadow: 0 10px 30px rgba(0,0,0,.1); }
 .spinner { border: 3px solid rgba(255,255,255,.18); border-top-color: var(--p-primary); border-radius: 999px; animation: kf-spin .8s linear infinite; }
 
 /* ——— 进度滑杆 ——— */
-input[type="range"].hg-range { -webkit-appearance: none; appearance: none; height: 20px; background: transparent; cursor: pointer; }
+input[type="range"].hg-range { -webkit-appearance: none; appearance: none; height: 28px; background: transparent; cursor: pointer; }
 input[type="range"].hg-range::-webkit-slider-runnable-track { height: 4px; border-radius: 99px; background: linear-gradient(to right, var(--p-primary) var(--fill,0%), rgba(255,255,255,.22) var(--fill,0%)); }
 input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 99px; background: #fff; box-shadow: 0 0 10px var(--p-glow); }
 
@@ -240,7 +247,8 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
 /* 仅桌面窗口（Windows 无边框 / macOS Overlay）：右侧/底部留 12px 呼吸位 + 圆角。
    安卓必须不加，否则内容比屏幕小一圈（右侧、底部各 12px 露 canvas 底）。 */
 .plat-windows .win-main,
-.plat-macos .win-main {
+.plat-macos .win-main,
+.plat-linux .win-main {
   margin: 0 12px 12px 0;
   border-radius: 13px;
   background: var(--p-bg);

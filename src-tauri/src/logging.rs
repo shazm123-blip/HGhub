@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 
+const MAX_FILE: u64 = 2 * 1024 * 1024;
 static DEBUG_WRITER: Mutex<()> = Mutex::new(());
 
 fn format_utc(at: OffsetDateTime) -> Result<String, String> {
@@ -18,7 +19,13 @@ pub(crate) fn utc_timestamp() -> Result<String, String> {
 }
 
 pub(crate) fn append_debug(dir: &Path, message: &str) -> Result<(), String> {
-    let _writer = DEBUG_WRITER.lock().map_err(|_| "日志锁失败")?;
+    append_debug_with_limit(dir, message, MAX_FILE)
+}
+
+fn append_debug_with_limit(dir: &Path, message: &str, limit: u64) -> Result<(), String> {
+    let _writer = DEBUG_WRITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     fs::create_dir_all(dir).map_err(|_| "无法创建日志目录")?;
     let at = utc_timestamp()?;
     let prefix = format!("[{at}] [pid={}] ", std::process::id());
@@ -33,10 +40,20 @@ pub(crate) fn append_debug(dir: &Path, message: &str) -> Result<(), String> {
         record.push_str(&prefix);
         record.push('\n');
     }
+    let path = dir.join("debug.log");
+    if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) + record.len() as u64 > limit {
+        let previous = dir.join("debug.previous.log");
+        if previous.exists() {
+            fs::remove_file(&previous).map_err(|_| "无法轮转调试日志")?;
+        }
+        if path.exists() {
+            fs::rename(&path, previous).map_err(|_| "无法轮转调试日志")?;
+        }
+    }
     OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("debug.log"))
+        .open(path)
         .and_then(|mut f| f.write_all(record.as_bytes()))
         .map_err(|_| "无法写入调试日志".to_string())
 }
@@ -126,6 +143,19 @@ mod tests {
             assert_eq!(pair[1], pair[0].replace("start ", "end "));
             assert!(pair[0].contains("Z] [pid="));
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn debug_log_rotates_when_exceeding_limit() {
+        let dir = test_dir();
+        for i in 0..8 {
+            append_debug_with_limit(&dir, &format!("entry-{i}-{}", "x".repeat(40)), 220).unwrap();
+        }
+        assert!(dir.join("debug.previous.log").exists());
+        let cur = fs::read_to_string(dir.join("debug.log")).unwrap();
+        assert!(cur.len() <= 220);
+        assert!(cur.contains("entry-7-"));
         fs::remove_dir_all(dir).unwrap();
     }
 }

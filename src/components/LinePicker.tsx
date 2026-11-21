@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, hostOf, isMobile, type LineItem, type LineProbe, type LineState } from "../api";
+import { api, hostOf, isMobile, setApiBase, type LineItem, type LineProbe, type LineState } from "../api";
 import { useStore } from "../store";
 import { Modal, Sheet } from "./ui";
 import { ICheck, IClose, IRefresh, ISettings } from "../icons";
@@ -33,7 +33,7 @@ function Row({ item, current, probe, busy, disabled, onPick, onProbe }: {
 
 /* 线路选择：桌面居中弹窗，移动端底部抽屉 */
 export default function LinePicker({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { toast, setUser } = useStore();
+  const { toast, setUser, bumpLineVersion } = useStore();
   const [state, setState] = useState<LineState | null>(null);
   const [mirrors, setMirrors] = useState<LineItem[] | null>(null);
   const [mirrorErr, setMirrorErr] = useState("");
@@ -90,7 +90,11 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
     setSwitching(url);
     try {
       const next = await api.lineSet(url);
-      if (next !== state?.base) setUser(null);
+      setApiBase(next);
+      if (next !== state?.base) {
+        setUser(null);
+        bumpLineVersion();
+      }
       setState((s) => (s ? { ...s, base: next } : s));
       toast(`线路已切换到 ${hostOf(next)}，跨站点需重新登录`, "ok");
     } catch (e) {
@@ -104,14 +108,14 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   const busyAll = !!probing || !!switching;
 
   const body = (
-    <div className="flex flex-col min-h-0" style={{ maxHeight: isMobile ? "74vh" : "min(72vh, 620px)" }}>
+    <div className="flex flex-col min-h-0" style={{ maxHeight: isMobile ? "74dvh" : "min(72vh, 620px)" }}>
       <div className="shrink-0 flex items-center gap-2 px-4 pt-3 pb-2">
-        <span className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ISettings size={16} /></span>
+        <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ISettings size={16} /></span>
         <div className="flex-1 min-w-0">
           <div className="text-[14px] font-bold text-on leading-tight">线路</div>
           <div className="text-[10.5px] text-mut mt-0.5 truncate">当前：{state ? hostOf(state.base) : "读取中…"}</div>
         </div>
-        <button onClick={onClose} aria-label="关闭" className="w-8 h-8 rounded-full bg-s3/80 flex items-center justify-center text-mut pressable"><IClose size={16} /></button>
+        <button onClick={onClose} aria-label="关闭" className="shrink-0 w-8 h-8 rounded-full bg-s3/80 flex items-center justify-center text-mut pressable"><IClose size={16} /></button>
       </div>
 
       <div className="flex-1 scroll-y px-3 pb-4">
@@ -119,7 +123,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           <span className="text-[10.5px] font-semibold text-dim tracking-wide">固定线路</span>
           <span className="text-[10px] text-dim">需代理 / 非大陆网络</span>
           <button onClick={() => probe(fixed, "fixed")} disabled={busyAll || !fixed.length}
-            className="ml-auto text-[10.5px] text-primary pressable disabled:opacity-50">
+            className="ml-auto shrink-0 whitespace-nowrap text-[10.5px] text-primary pressable disabled:opacity-50">
             {probing === "fixed" ? "检测中…" : "全部检测"}
           </button>
         </div>
@@ -135,7 +139,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           <span className="text-[10.5px] font-semibold text-dim tracking-wide">镜像线路</span>
           <span className="text-[10px] text-dim">一般可直连 · 仅游客浏览</span>
           <button onClick={() => { void readMirrors(); }} disabled={loadingMirrors}
-            className="ml-auto inline-flex items-center gap-1 text-[10.5px] text-primary pressable disabled:opacity-50">
+            className="ml-auto shrink-0 whitespace-nowrap inline-flex items-center gap-1 text-[10.5px] text-primary pressable disabled:opacity-50">
             <IRefresh size={12} />{loadingMirrors ? "获取中…" : "刷新"}
           </button>
         </div>
@@ -172,6 +176,6 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   );
 
   return isMobile
-    ? <Sheet open={open} onClose={onClose}>{body}</Sheet>
+    ? <Sheet open={open} onClose={onClose} z="z-50">{body}</Sheet>
     : <Modal open={open} onClose={onClose} width={460}>{body}</Modal>;
 }

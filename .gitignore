@@ -31,3 +31,6 @@ docs/API.md
 
 # Agent instructions (local)
 AGENTS.md
+
+# iOS 自动续签脚本及运行时文件（含个人设备 UDID）
+scripts/ios-renew/

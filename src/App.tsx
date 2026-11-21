@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore, type Page, type Tab } from "./store";
 import { isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
-import { runBack } from "./back";
+import { hasBackHandler, isPlaybackLocked, runBack } from "./back";
 import Home from "./pages/Home";
 import Search, { RankPage } from "./pages/Search";
 import Category, { ChannelPage } from "./pages/Category";
@@ -15,7 +15,6 @@ import { ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
-import { IGrid, IGridF, IHome, IHomeF, ISearch, IUser, IUserF, Logo } from "./icons";
 
 /* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
 function TabBar() {
@@ -68,7 +67,7 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
   if (page.kind === "feed") {
     return (
       <Feed videoIds={page.videoIds} startIndex={page.index} title={page.title} kind={page.feedKind || "video"}
-        startEp={page.startEp} startTime={page.startTime}
+        startEp={page.startEp} startTime={page.startTime} initialCovers={page.covers}
         mode="context" active={top} bottomInset={bottomInset} onBack={onBack} />
     );
   }
@@ -80,13 +79,11 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
   return null;
 }
 
-/* ============ 应用主体 ============ */
-function AppBody() {
+/* ============ 统一主视口（桌面 / 移动共用） ============ */
+function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
   const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs, clean } = useStore();
-  const isMobile = platform === "android" || platform === "ios";
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
-  const [collapsed, setCollapsed] = useState(false);
 
   useLayoutEffect(() => {
     const el = mainRef.current;
@@ -100,13 +97,19 @@ function AppBody() {
   /* 全局键盘 */
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
+      if (isPlaybackLocked()) return;
+      const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
         if (e.key === "Escape") t.blur();
         return;
       }
-      if (loginOpen) { if (e.key === "Escape") setLoginOpen(false); return; }
-      if (e.key === "Escape") { if (stack.length) pop(); return; }
+      if (e.key === "Escape") {
+        if (runBack()) return;
+        if (loginOpen) { setLoginOpen(false); return; }
+        if (stack.length) pop();
+        return;
+      }
+      if (loginOpen || hasBackHandler()) return;
       if (e.key === "/") { e.preventDefault(); setTab("search"); return; }
       if (["1", "2", "3", "4"].includes(e.key) && !e.repeat) {
         setTab((["home", "search", "category", "profile"] as Tab[])[Number(e.key) - 1]);
@@ -119,23 +122,21 @@ function AppBody() {
   const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
   const pageActive = stack.length === 0 && !loginOpen;
   const bottomInset = isMobile ? (fs || clean ? 0 : 40) : 14;
-  /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，
-     底部只让出安全区。之前多留了 20px，视频底边会露出一条
-     「底栏」似的窄缝（底部的压暗渐变到不了屏幕最底）。 */
+  /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
   return (
     <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
-      {!isMobile && <DesktopRail collapsed={collapsed} />}
-      <div ref={mainRef} className="relative flex-1 min-w-0 overflow-hidden win-main">
+      {!isMobile && !theater && <DesktopRail collapsed={collapsed} />}
+      <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${!isMobile && theater ? "is-theater-main" : ""}`}>
         <div className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
         <div className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
         <div className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
-        <div className={vis("profile")}><Profile wide={wide} /></div>
+        <div className={vis("profile")}><Profile wide={wide} active={pageActive && tab === "profile"} /></div>
 
         {stack.map((p, i) => (
-          <div key={p.key} className="absolute inset-0 z-30 bg-bg a-page-in" style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
-            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1} bottomInset={stackInset} />
+          <div key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
+            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !loginOpen} bottomInset={stackInset} />
           </div>
         ))}
 
@@ -145,7 +146,7 @@ function AppBody() {
   );
 }
 
-/* ============ 桌面窗口壳（Windows / macOS）============ */
+/* ============ 桌面窗口壳（Windows / macOS / Linux）============ */
 function DesktopShell() {
   const [collapsed, setCollapsed] = useState(false);
   const { theater, platform } = useStore();
@@ -153,75 +154,22 @@ function DesktopShell() {
     <div className={`absolute inset-0 flex flex-col bg-canvas win-root plat-${platform}`}>
       <DesktopTitleBar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
       <div className="relative flex-1 min-h-0">
-        <ShellInner collapsed={collapsed || theater} theater={theater} />
+        <MainViewport collapsed={collapsed || theater} theater={theater} />
       </div>
-      {/* 边缘缩放热区只对无边框窗口（Windows）有效，macOS 走原生窗口边框 */}
-      {platform === "windows" && <ResizeHandles />}
-    </div>
-  );
-}
-
-function ShellInner({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
-  const { stack, pop, loginOpen, setLoginOpen, tab, setTab, platform } = useStore();
-  const mainRef = useRef<HTMLDivElement>(null);
-  const [wide, setWide] = useState(true);
-
-  useLayoutEffect(() => {
-    const el = mainRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setWide(el.clientWidth > 640));
-    ro.observe(el);
-    setWide(el.clientWidth > 640);
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
-        if (e.key === "Escape") t.blur();
-        return;
-      }
-      if (loginOpen) { if (e.key === "Escape") setLoginOpen(false); return; }
-      if (e.key === "Escape") { if (stack.length) pop(); return; }
-      if (e.key === "/") { e.preventDefault(); setTab("search"); return; }
-      if (["1", "2", "3", "4"].includes(e.key) && !e.repeat) {
-        setTab((["home", "search", "category", "profile"] as Tab[])[Number(e.key) - 1]);
-      }
-    };
-    window.addEventListener("keydown", fn);
-    return () => window.removeEventListener("keydown", fn);
-  }, [stack.length, pop, setTab, loginOpen, setLoginOpen]);
-
-  const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
-  const pageActive = stack.length === 0 && !loginOpen;
-
-  return (
-    <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
-      {!theater && <DesktopRail collapsed={collapsed} />}
-      <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${theater ? "is-theater-main" : ""}`}>
-        <div className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={14} /></div>
-        <div className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
-        <div className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
-        <div className={vis("profile")}><Profile wide={wide} /></div>
-        {stack.map((p, i) => (
-          <div key={p.key} className="absolute inset-0 z-30 bg-bg win-page-in" style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
-            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1} bottomInset={14} />
-          </div>
-        ))}
-      </div>
+      {/* 边缘缩放热区用于无边框窗口（Windows / Linux），macOS 走原生窗口边框 */}
+      {(platform === "windows" || platform === "linux") && <ResizeHandles />}
     </div>
   );
 }
 
 /* ============ 移动端（无壳） ============ */
 function MobileShell() {
-  const { platform } = useStore();
+  const { platform, fs } = useStore();
   return (
-    <div className={`absolute inset-0 flex flex-col bg-canvas plat-${platform}`}
-      style={{ "--sat": "max(env(safe-area-inset-top), 12px)", "--sab": "max(env(safe-area-inset-bottom), 16px)" } as React.CSSProperties}>
+    <div className={`fixed inset-0 flex flex-col bg-canvas plat-${platform}`}
+      style={fs ? undefined : { paddingLeft: "var(--sal, 0px)", paddingRight: "var(--sar, 0px)" }}>
       <div className="relative flex-1 min-h-0">
-        <AppBody />
+        <MainViewport collapsed={false} theater={false} />
       </div>
     </div>
   );
@@ -276,12 +224,10 @@ export default function App() {
   }, []);
 
   return (
-    <>
+    <div className={`fixed inset-0 plat-${platform}`}>
       {isMobile ? <MobileShell /> : <DesktopShell />}
       <LoginModal />
       <ToastHost />
-      {/* 登录遮罩键盘处理占位 */}
-      {loginOpen && <div className="hidden" onClick={() => setLoginOpen(false)} />}
-    </>
+    </div>
   );
 }

@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cover } from "../api";
+import { pushBackHandler } from "../back";
 import { useStore } from "../store";
-import { ICheck, IClose, IHeartF, ISparkF, IStarF } from "../icons";
+import { ICheck, IHeartF, ISparkF, IStarF } from "../icons";
 
 /* ——— 头像 ——— */
 export function Avatar({ hue = 250, icon, name, size = 40, ring = false, className = "" }: {
@@ -21,17 +22,25 @@ export function Avatar({ hue = 250, icon, name, size = 40, ring = false, classNa
 }
 
 /* ——— 底部弹层 ——— */
-export function Sheet({ open, onClose, children, z = "z-40" }: { open: boolean; onClose: () => void; children: React.ReactNode; z?: string }) {
+export function Sheet({ open, onClose, children, z = "z-50" }: { open: boolean; onClose: () => void; children: React.ReactNode; z?: string }) {
   const [render, setRender] = useState(open);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (open) setRender(true);
     else { const t = window.setTimeout(() => setRender(false), 230); return () => window.clearTimeout(t); }
   }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    return pushBackHandler(() => { onCloseRef.current(); return true; });
+  }, [open]);
   if (!render) return null;
   return (
-    <div className={`absolute inset-0 ${z}`}>
+    <div className={`fixed inset-0 ${z}`}>
       <div className={`absolute inset-0 ${open ? "a-fade" : "opacity-0 transition-opacity duration-200"}`}
-        style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose} />
+        style={{ background: "rgba(0,0,0,.55)", touchAction: "none" }}
+        onTouchMove={(e) => e.stopPropagation()}
+        onClick={onClose} />
       <div className={`absolute bottom-0 inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
         style={{ paddingBottom: "var(--sab, 0px)", borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
         <div className="pt-3 pb-1 flex justify-center"><div className="w-8 h-1 rounded-full bg-dim/70" /></div>
@@ -44,15 +53,26 @@ export function Sheet({ open, onClose, children, z = "z-40" }: { open: boolean; 
 /* ——— 居中弹窗 ——— */
 export function Modal({ open, onClose, children, width = 340 }: { open: boolean; onClose: () => void; children: React.ReactNode; width?: number }) {
   const [render, setRender] = useState(open);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (open) setRender(true);
     else { const t = window.setTimeout(() => setRender(false), 200); return () => window.clearTimeout(t); }
   }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    return pushBackHandler(() => { onCloseRef.current(); return true; });
+  }, [open]);
   if (!render) return null;
   return (
-    <div className="absolute inset-0 z-[55] flex items-center justify-center p-6">
-      <div className={`absolute inset-0 bg-black/65 backdrop-blur-sm ${open ? "a-fade" : "opacity-0 transition-opacity"}`} onClick={onClose} />
-      <div className={`relative bg-s3 rounded-(--r-lg) elev-3 ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`} style={{ width, maxWidth: "100%" }}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center px-5"
+      style={{ paddingTop: "calc(var(--sat, 0px) + 16px)", paddingBottom: "calc(var(--sab, 0px) + 16px)" }}>
+      <div className={`absolute inset-0 bg-black/65 backdrop-blur-sm ${open ? "a-fade" : "opacity-0 transition-opacity"}`}
+        style={{ touchAction: "none" }}
+        onTouchMove={(e) => e.stopPropagation()}
+        onClick={onClose} />
+      <div className={`relative bg-s3 rounded-(--r-lg) elev-3 scroll-y ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`}
+        style={{ width, maxWidth: "100%", maxHeight: "calc(100dvh - var(--sat, 0px) - var(--sab, 0px) - 32px)" }}>
         {children}
       </div>
     </div>
@@ -63,7 +83,7 @@ export function Modal({ open, onClose, children, width = 340 }: { open: boolean;
 export function Toggle({ on, onChange, label, disabled = false }: { on: boolean; onChange: (b: boolean) => void; label?: string; disabled?: boolean }) {
   return (
     <button disabled={disabled} onClick={() => onChange(!on)} aria-pressed={on} aria-label={label}
-      className={`relative w-[46px] h-[26px] rounded-full transition-colors duration-200 disabled:opacity-50 disabled:cursor-wait ${on ? "bg-primary" : "bg-s4"}`}>
+      className={`relative shrink-0 w-[46px] h-[26px] rounded-full transition-colors duration-200 disabled:opacity-50 disabled:cursor-wait ${on ? "bg-primary" : "bg-s4"}`}>
       <span className={`absolute top-[3px] w-5 h-5 rounded-full elev-1 transition-all duration-200 ${on ? "left-[23px] bg-on-primary" : "left-[3px] bg-mut"}`} />
     </button>
   );
@@ -85,11 +105,6 @@ export function Empty({ icon, title, sub, action, onAction }: {
   );
 }
 
-/* ——— 键帽 ——— */
-export function Kbd({ children }: { children: React.ReactNode }) {
-  return <span className="inline-flex items-center justify-center min-w-[22px] h-[22px] px-1.5 rounded-(--r-ctl) bg-s4 text-[11px] font-semibold text-on/85 elev-1">{children}</span>;
-}
-
 /* ——— Toast ——— */
 export function ToastHost() {
   const { toasts } = useStore();
@@ -108,71 +123,74 @@ export function ToastHost() {
   );
 }
 
-/* ——— 长按 ——— */
-export function useLongPress(cb: (e: { clientX: number; clientY: number }) => void, ms = 480) {
-  const timer = useRef<number | undefined>(undefined);
-  const start = useRef({ x: 0, y: 0 });
-  const fired = useRef(false);
-  const clear = () => { window.clearTimeout(timer.current); };
-  return {
-    onPointerDown: (e: React.PointerEvent) => {
-      fired.current = false;
-      start.current = { x: e.clientX, y: e.clientY };
-      const { clientX, clientY } = e;
-      timer.current = window.setTimeout(() => { fired.current = true; cb({ clientX, clientY }); }, ms);
-    },
-    onPointerMove: (e: React.PointerEvent) => {
-      if (Math.abs(e.clientX - start.current.x) > 10 || Math.abs(e.clientY - start.current.y) > 10) clear();
-    },
-    onPointerUp: clear,
-    onPointerLeave: clear,
-    onClickCapture: (e: React.MouseEvent) => { if (fired.current) { e.stopPropagation(); e.preventDefault(); fired.current = false; } },
-    onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); cb({ clientX: e.clientX, clientY: e.clientY }); },
-  };
-}
-
-/* ——— 关闭按钮 ——— */
-export function CloseBtn({ onClick }: { onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="w-8 h-8 rounded-full bg-s3/80 flex items-center justify-center text-mut pressable hover:text-on">
-      <IClose size={16} />
-    </button>
-  );
-}
-
-/* ——— 图片（骨架 + 渐显，自动走本地解密协议） ——— */
+/* ——— 图片（骨架 + 渐显，自动走本地解密协议；支持同步缓存兜底与瞬时失败自动重试） ——— */
 export function Img({ src, alt = "", className = "", eager = false, raw = false }: {
   src: string; alt?: string; className?: string; eager?: boolean; raw?: boolean;
 }) {
+  const baseUrl = raw ? src : cover(src);
   const [ok, setOk] = useState(false);
   const [err, setErr] = useState(false);
-  const url = raw ? src : cover(src);
+  const [retry, setRetry] = useState(0);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const prevUrlRef = useRef(baseUrl);
+  const retryTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (prevUrlRef.current !== baseUrl) {
+      prevUrlRef.current = baseUrl;
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      setOk(false);
+      setErr(false);
+      setRetry(0);
+    }
+    const img = imgRef.current;
+    if (img && img.complete && img.naturalWidth > 0) {
+      setOk(true);
+      setErr(false);
+    }
+  }, [baseUrl, retry]);
+
+  const displayUrl = retry > 0 && baseUrl && !baseUrl.startsWith("data:") && !baseUrl.startsWith("blob:")
+    ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}r=${retry}`
+    : baseUrl;
+
+  const handleError = () => {
+    if (retry < 2 && baseUrl && !baseUrl.startsWith("data:") && !baseUrl.startsWith("blob:")) {
+      const delay = retry === 0 ? 700 : 1800;
+      if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null;
+        setRetry((r) => r + 1);
+      }, delay);
+      return;
+    }
+    setErr(true);
+  };
+
   return (
     <div className={`absolute inset-0 overflow-hidden ${className}`}>
       {!ok && !err && <div className="absolute inset-0 shimmer" />}
       {err && <div className="absolute inset-0 bg-s3" />}
-      <img src={url} alt={alt} loading={eager ? "eager" : "lazy"} onLoad={() => setOk(true)} onError={() => setErr(true)}
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${ok ? "opacity-100" : "opacity-0"}`} draggable={false} />
-    </div>
-  );
-}
-/* ——— 右侧停靠面板（桌面评论/选集） ——— */
-export function DockPanel({ open, onClose, children, width = 372 }: {
-  open: boolean; onClose: () => void; children: React.ReactNode; width?: number;
-}) {
-  const [render, setRender] = useState(open);
-  useEffect(() => {
-    if (open) setRender(true);
-    else { const t = window.setTimeout(() => setRender(false), 230); return () => window.clearTimeout(t); }
-  }, [open]);
-  if (!render) return null;
-  return (
-    <div className="absolute inset-0 z-40 pointer-events-none">
-      <div className={`absolute inset-0 bg-black/35 pointer-events-auto ${open ? "a-fade" : "opacity-0 transition-opacity duration-200"}`} onClick={onClose} />
-      <div className={`desktop-dock absolute right-0 top-0 bottom-0 pointer-events-auto flex flex-col ${open ? "a-panel-in" : "a-panel-out"}`}
-        role="dialog" aria-label="侧边面板" style={{ width, maxWidth: "88%" }}>
-        {children}
-      </div>
+      {displayUrl && (
+        <img
+          ref={imgRef}
+          src={displayUrl}
+          alt={alt}
+          loading={eager ? "eager" : "lazy"}
+          decoding="async"
+          onLoad={() => { setOk(true); setErr(false); }}
+          onError={handleError}
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${ok ? "opacity-100" : "opacity-0"}`}
+          draggable={false}
+        />
+      )}
     </div>
   );
 }
