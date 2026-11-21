@@ -5,6 +5,7 @@ VERSION="${1:?Usage: build-ios-unsigned.sh VERSION}"
 ROOT="$(pwd)"
 LOG="$ROOT/ios-build-session.log"
 ADDR_FILE="$(node -p "require('os').tmpdir() + '/' + require('./src-tauri/tauri.conf.json').identifier + '-server-addr'")"
+PACKAGE_DIR=""
 mkdir -p artifacts
 rm -f "$ADDR_FILE"
 
@@ -14,6 +15,8 @@ pnpm tauri ios build --open --ci --features custom-protocol >"$LOG" 2>&1 &
 SESSION_PID=$!
 cleanup() {
   kill "$SESSION_PID" 2>/dev/null || true
+  [[ -n "${PACKAGE_DIR:-}" ]] && rm -rf "$PACKAGE_DIR"
+  rm -f "$ROOT/ios-binary-strings.txt"
   cat "$LOG"
 }
 trap cleanup EXIT

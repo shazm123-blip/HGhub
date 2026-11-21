@@ -27,7 +27,7 @@ jobs:
             V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
+          node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}let c=fs.readFileSync('src-tauri/Cargo.toml','utf8');c=c.replace(/^version = \"[^\"]*\"/m,'version = \"'+process.argv[1]+'\"');fs.writeFileSync('src-tauri/Cargo.toml',c)" "$V"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -53,7 +53,7 @@ jobs:
       - name: 初始化 iOS Xcode 工程
         run: |
           pnpm tauri ios init --ci
-          # 确保 iOS Info.plist（含 ~iphone / ~ipad 变体）支持横竖屏切换及 ATS
+          # 确保 iOS Info.plist（含 ~iphone / ~ipad 变体）支持横竖屏切换
           for plist in $(find src-tauri/gen/apple -name "Info.plist" 2>/dev/null); do
             for key in "UISupportedInterfaceOrientations" "UISupportedInterfaceOrientations~iphone" "UISupportedInterfaceOrientations~ipad"; do
               /usr/libexec/PlistBuddy -c "Delete :${key}" "$plist" 2>/dev/null || true
@@ -62,9 +62,6 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :${key}:1 string UIInterfaceOrientationLandscapeLeft" "$plist"
               /usr/libexec/PlistBuddy -c "Add :${key}:2 string UIInterfaceOrientationLandscapeRight" "$plist"
             done
-            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist"
-            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$plist"
           done
         env:
           APPLE_DEVELOPMENT_TEAM: "ABCDE12345"
@@ -83,20 +80,21 @@ jobs:
           if-no-files-found: error
 
       - name: 发布 iOS GitHub Release
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           V="${{ steps.ver.outputs.version }}"
-          TAG="v${V}-ios"
-          NOTES="## HGhub iOS 增强版 (v${V})
+          BASE_V="${V%-ios}"
+          TAG="v${BASE_V}-ios"
+          NOTES="## HGhub iOS 增强版 (v${BASE_V})
 
           ### ✨ 核心特性
           - **沉浸式竖屏刷剧流**：支持首页无限推荐流、题材分类、三大榜单（热门/推荐/潜力）、搜索、吃瓜社区图文与视频帖、选集与历史续播。
           - **原生横竖屏智能切换**：横屏视频支持一键「横屏全屏」（调用 iOS 原生屏幕方向旋转），支持手机物理横置自动全屏、竖回自动退出，独立固定舞台层渲染不跑偏、不闪封面。
           - **丰富触控手势**：
-            - **双指自由缩放（1x~4x）与平移**：竖屏观看横屏视频可自由缩放，并提供「放大铺满 / 完整适应 / 还原缩放」胶囊按钮；
+            - **双指自由缩放（1x~3.5x）与平移**：竖屏观看横屏视频可自由缩放，并提供「放大铺满 / 完整适应 / 还原缩放」胶囊按钮；
             - **单击清屏 / 双击暂停**：单击屏幕隐藏所有控件与遮罩纯享画面，双击屏幕暂停/播放；
             - **长按 2.0x 倍速 + 上滑锁定**：长按画面开启 2.0x 倍速，上滑即可锁定倍速；
             - **左右横滑预览定位**：任意位置横滑精准跳转进度。
@@ -110,10 +108,10 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" artifacts/*.ipa --clobber
-            gh release edit "$TAG" --title "HGhub v${V} iOS 正式版" --notes "$NOTES" --prerelease=false --latest
+            gh release edit "$TAG" --title "HGhub v${BASE_V} iOS 正式版" --notes "$NOTES" --prerelease=false --latest=false
           else
             gh release create "$TAG" artifacts/*.ipa \
-              --title "HGhub v${V} iOS 正式版" \
+              --title "HGhub v${BASE_V} iOS 正式版" \
               --notes "$NOTES" \
-              --latest
+              --latest=false
           fi
