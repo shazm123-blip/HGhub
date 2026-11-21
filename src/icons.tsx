@@ -1,8 +1,10 @@
 import React from "react";
+import { isIos, isMacos } from "./api";
 
+const apple = isIos || isMacos;
 type P = { size?: number; className?: string; style?: React.CSSProperties; strokeWidth?: number };
 const S = (d: React.ReactNode, fill = false) =>
-  function Icon({ size = 24, className = "", style, strokeWidth = 2 }: P) {
+  function Icon({ size = 24, className = "", style, strokeWidth = apple ? 1.8 : 2 }: P) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={style}
         fill={fill ? "currentColor" : "none"} stroke={fill ? "none" : "currentColor"}
@@ -12,14 +14,17 @@ const S = (d: React.ReactNode, fill = false) =>
     );
   };
 
-export const IHome = S(<><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h5v-6h4v6h5V9.5" /></>);
-export const IHomeF = S(<path d="M12 2.6 2.8 10.2a1 1 0 0 0 .64 1.77H4v8.2A1.8 1.8 0 0 0 5.8 22H9.4v-5.6a2.6 2.6 0 0 1 5.2 0V22h3.6a1.8 1.8 0 0 0 1.8-1.8V12h.56a1 1 0 0 0 .64-1.77Z" />, true);
+// Apple 端的线形与实心变体共用轮廓，切换选中态时保持光学尺寸。
+const home = <path d="M2.4 10.9 11 3.4a1.5 1.5 0 0 1 2 0l8.6 7.5-2.4-.1v9a1 1 0 0 1-1 1h-4.1v-6.6H9.9v6.6H5.8a1 1 0 0 1-1-1v-9Z" />;
+const person = <><circle cx="12" cy="7.2" r="3.8"/><path d="M4 20.1c.3-3.6 3.6-6 8-6s7.7 2.4 8 6c0 .5-.4.9-1 .9H5c-.6 0-1-.4-1-.9Z"/></>;
+export const IHome = S(apple ? home : <><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h5v-6h4v6h5V9.5" /></>);
+export const IHomeF = S(apple ? home : <path d="M12 2.6 2.8 10.2a1 1 0 0 0 .64 1.77H4v8.2A1.8 1.8 0 0 0 5.8 22H9.4v-5.6a2.6 2.6 0 0 1 5.2 0V22h3.6a1.8 1.8 0 0 0 1.8-1.8V12h.56a1 1 0 0 0 .64-1.77Z" />, true);
 export const ISearch = S(<><circle cx="11" cy="11" r="7" /><path d="m20.4 20.4-3.2-3.2" /></>);
 const grid = <><rect x="3.5" y="3.5" width="7.2" height="7.2" rx="2.2" /><rect x="13.3" y="3.5" width="7.2" height="7.2" rx="2.2" /><rect x="3.5" y="13.3" width="7.2" height="7.2" rx="2.2" /><rect x="13.3" y="13.3" width="7.2" height="7.2" rx="2.2" /></>;
 export const IGrid = S(grid);
-export const IGridF = S(<><rect x="3" y="3" width="8" height="8" rx="2.4" /><rect x="13" y="3" width="8" height="8" rx="2.4" /><rect x="3" y="13" width="8" height="8" rx="2.4" /><rect x="13" y="13" width="8" height="8" rx="2.4" /></>, true);
-export const IUser = S(<><circle cx="12" cy="8" r="4.2" /><path d="M4.5 20.4c1.4-3.6 4.2-5.4 7.5-5.4s6.1 1.8 7.5 5.4" /></>);
-export const IUserF = S(<><circle cx="12" cy="7.6" r="4.8" /><path d="M12 14.6c-4 0-7.1 2.2-8.3 5.7-.3.9.4 1.7 1.3 1.7h14c.9 0 1.6-.8 1.3-1.7-1.2-3.5-4.3-5.7-8.3-5.7Z" /></>, true);
+export const IGridF = S(apple ? grid : <><rect x="3" y="3" width="8" height="8" rx="2.4" /><rect x="13" y="3" width="8" height="8" rx="2.4" /><rect x="3" y="13" width="8" height="8" rx="2.4" /><rect x="13" y="13" width="8" height="8" rx="2.4" /></>, true);
+export const IUser = S(apple ? person : <><circle cx="12" cy="8" r="4.2" /><path d="M4.5 20.4c1.4-3.6 4.2-5.4 7.5-5.4s6.1 1.8 7.5 5.4" /></>);
+export const IUserF = S(apple ? person : <><circle cx="12" cy="7.6" r="4.8" /><path d="M12 14.6c-4 0-7.1 2.2-8.3 5.7-.3.9.4 1.7 1.3 1.7h14c.9 0 1.6-.8 1.3-1.7-1.2-3.5-4.3-5.7-8.3-5.7Z" /></>, true);
 export const IHeart = S(<path d="M12 20.6C6.4 16.9 3 13.6 3 9.9 3 7.2 5.1 5 7.8 5c1.7 0 3.2.8 4.2 2.2C13 5.8 14.5 5 16.2 5 18.9 5 21 7.2 21 9.9c0 3.7-3.4 7-9 10.7Z" />);
 export const IHeartF = S(<path d="M12 21.1C6.1 17.2 2.5 13.7 2.5 9.8c0-3 2.3-5.3 5.2-5.3 1.7 0 3.3.8 4.3 2.2 1-1.4 2.6-2.2 4.3-2.2 2.9 0 5.2 2.3 5.2 5.3 0 3.9-3.6 7.4-9.5 11.3Z" />, true);
 export const IStar = S(<path d="m12 3.4 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.6l5.9-.8Z" />);
@@ -28,7 +33,7 @@ export const ICommentF = S(<path d="M12 2.8c5.4 0 9.8 3.9 9.8 8.8s-4.4 8.8-9.8 8
 export const IComment = S(<path d="M12 3.4c5 0 9.2 3.6 9.2 8.2S17 19.8 12 19.8c-.9 0-1.8-.1-2.6-.3-1.1 1-2.7 1.7-4.6 1.8.7-1 1.2-2.2 1.3-3.4-2-1.5-3.3-3.6-3.3-6.1 0-4.6 4.2-8.4 9.2-8.4Z" />);
 export const IExpand = S(<><path d="M8.5 3.5H3.5v5" /><path d="M15.5 3.5h5v5" /><path d="M8.5 20.5h-5v-5" /><path d="M15.5 20.5h5v-5" /></>);
 export const ICompress = S(<><path d="M3.5 8.5h5v-5" /><path d="M20.5 8.5h-5v-5" /><path d="M3.5 15.5h5v5" /><path d="M20.5 15.5h-5v5" /></>);
-export const IBack = S(<path d="m14.5 5-7 7 7 7" strokeWidth={2.4} />);
+export const IBack = S(apple ? <path d="m15.5 3.8-8.2 8.2 8.2 8.2" strokeWidth={2.3} /> : <path d="m14.5 5-7 7 7 7" strokeWidth={2.4} />);
 export const IChevR = S(<path d="m9.5 5 7 7-7 7" />);
 export const IPlayF = S(<path d="M7.5 4.3c0-1 1.1-1.6 2-1.1l11 6.7c.9.5.9 1.7 0 2.2l-11 6.7c-.9.5-2-.1-2-1.1Z" />, true);
 export const IPauseF = S(<><rect x="5.5" y="3.5" width="4.6" height="17" rx="1.6" /><rect x="13.9" y="3.5" width="4.6" height="17" rx="1.6" /></>, true);

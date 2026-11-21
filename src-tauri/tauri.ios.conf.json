@@ -1,7 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "devUrl": null
+    "devUrl": null,
+    "beforeBuildCommand": "pnpm build && cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/",
+    "beforeDevCommand": "cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/ && pnpm dev"
   },
   "bundle": {
     "iOS": {

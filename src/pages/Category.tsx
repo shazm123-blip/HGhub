@@ -1,6 +1,6 @@
 import IosNavigation from "../components/IosNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, isIos, fmt } from "../api";
+import { api, isIos, isMacos, fmt } from "../api";
 import type { Post, VideoCard } from "../types";
 import { useStore } from "../store";
 import { Masonry, RowCard } from "../components/cards";
@@ -291,10 +291,12 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
     <div className="absolute inset-0 bg-bg flex flex-col">
       <div className="shrink-0 bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="px-3 pt-2 pb-3 flex items-center gap-2.5">
+          {!isMacos && <>
           <button onClick={onBack} aria-label="返回" className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
           <span className="shrink-0 w-[40px] h-[40px] rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><IGrid size={21} strokeWidth={1.9} /></span>
+          </>}
           <div className="flex-1 min-w-0">
-            <div className="text-[17px] font-bold text-on leading-tight truncate">{name}</div>
+            {!isMacos && <div className="text-[17px] font-bold text-on leading-tight truncate">{name}</div>}
             <div className="text-[10.5px] text-mut">共 {items.length} 部 · 已加载 {page}/{Math.max(pages, 1)} 页</div>
           </div>
           <button

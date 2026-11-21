@@ -1,6 +1,6 @@
 import IosNavigation from "../components/IosNavigation";
 import { useEffect, useRef, useState } from "react";
-import { api, isIos, isMobile } from "../api";
+import { api, isIos, isMacos, isMobile } from "../api";
 import type { RankItem, VideoCard } from "../types";
 import { useStore } from "../store";
 import { Masonry, RankRow } from "../components/cards";
@@ -218,9 +218,10 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
     <div className="absolute inset-0 bg-bg flex flex-col">
       {isIos && <IosNavigation title="HG 热榜" subtitle={`${meta.desc} · 每 10 分钟更新`} onBack={onBack} />}
       <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: isIos ? 0 : "var(--sat, 0px)" }}>
-        {!isIos && <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />}
+        {!isIos && !isMacos && <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />}
         <div className="relative px-3 pt-2 pb-4">
-          {!isIos && <>
+          {isMacos && <p className="text-xs text-mut">{meta.desc} · 每 10 分钟更新</p>}
+          {!isIos && !isMacos && <>
           <button onClick={onBack} aria-label="返回" className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
           <div className="px-2 mt-1 flex items-end justify-between">
             <div>

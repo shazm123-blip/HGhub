@@ -807,3 +807,32 @@ html.plat-macos.theme-light, html.plat-macos.theme-light body { background: tran
 .mac-toolbar .mac-search { margin-left: 5px; padding: 0 8px; gap: 6px; background: var(--p-fill-2); font-size: 12px; }
 .mac-search kbd { margin-left: 24px; font-size: 10px; }
 .mac-window :is(button,input):focus-visible { outline: 2px solid var(--p-primary); outline-offset: 1px; }
+
+/* 视频上的控件使用固定暗色材质，浅色外观也能看清。 */
+:is(html.plat-ios, html.plat-macos) :is(.hg-chip, .hg-chip-strong, .player-speed-menu) {
+  background: rgba(28, 28, 30, .72);
+  -webkit-backdrop-filter: saturate(150%) blur(14px);
+  backdrop-filter: saturate(150%) blur(14px);
+  box-shadow: inset 0 0 0 .5px rgba(255,255,255,.22);
+}
+html.plat-macos .desktop-control-row {
+  border-radius: 12px; padding: 0 6px; background: rgba(28,28,30,.75);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+}
+html.plat-macos .player-timecode { font-size: 12px; color: #eee; }
+html.plat-ios .hg-player-ui .hg-chip-strong { letter-spacing: .01em; }
+@keyframes apple-sheet {
+  from { transform: translateY(100%); }
+  76% { transform: translateY(0) scaleY(1.012); }
+  to { transform: none; }
+}
+html.plat-ios .a-sheet { animation-name: apple-sheet; transform-origin: bottom; }
+@keyframes apple-page { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+html.plat-macos .win-page-in { animation: apple-page .25s var(--ease-spring) both; }
+@keyframes apple-like { 0% { transform: scale(.84); } 42% { transform: scale(1.22); } 72% { transform: scale(.96); } 100% { transform: scale(1); } }
+:is(html.plat-ios, html.plat-macos) .a-pop { display: inline-flex; animation: apple-like .4s ease-out; }
+:is(html.plat-ios, html.plat-macos) .shimmer { background-image: linear-gradient(105deg, var(--p-s2) 32%, var(--p-s4) 50%, var(--p-s2) 68%); }
+@media (prefers-reduced-motion: reduce) {
+  :is(html.plat-ios, html.plat-macos) :is(.a-pop,.a-page-in,.a-page-out,.win-page-in,.a-sheet,.a-sheet-out,.a-scale-in,.a-rise,.a-toast,.shimmer) { animation-duration: .01ms; animation-iteration-count: 1; }
+  :is(html.plat-ios, html.plat-macos) .pressable { transition: none; }
+}
