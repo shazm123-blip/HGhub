@@ -55,8 +55,6 @@ type Persist = {
   history: WatchProgress[];
   follows: number[];
   followAuthors: Record<number, FollowAuthor>;
-  videoSnapshots: Record<number, VideoSnapshot>;
-  videoOrientations: Record<number, VideoOrientationMeta>;
   landscapeFitPref: "contain" | "cover";
   muted: boolean;
   muteOnStartup: boolean;
@@ -64,14 +62,22 @@ type Persist = {
   searchHist: string[];
 };
 
+type CachePersist = {
+  videoSnapshots: Record<number, VideoSnapshot>;
+  videoOrientations: Record<number, VideoOrientationMeta>;
+};
+
 const LS = "hghub_app_v1";
+const LS_CACHE = "hghub_cache_v1";
 const DEFAULTS: Persist = {
   likes: [], favs: [], history: [], follows: [],
   followAuthors: {},
-  videoSnapshots: {},
-  videoOrientations: {},
   landscapeFitPref: "contain",
   muted: true, muteOnStartup: true, volume: 0.7, searchHist: [],
+};
+const CACHE_DEFAULTS: CachePersist = {
+  videoSnapshots: {},
+  videoOrientations: {},
 };
 
 /** 旧版本 history 是 number[]，读出来时升级成带进度的结构 */
@@ -91,26 +97,51 @@ function normalizeHistory(raw: unknown): WatchProgress[] {
   return out;
 }
 
-function loadPersist(): Persist {
+function loadPersistState(): { persist: Persist; cache: CachePersist; migratedCache: boolean } {
+  let persist: Persist = DEFAULTS;
+  let legacySnapshots: Record<number, VideoSnapshot> | undefined;
+  let legacyOrientations: Record<number, VideoOrientationMeta> | undefined;
   try {
     const raw = localStorage.getItem(LS);
-    if (!raw) return DEFAULTS;
-    const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Persist>) };
-    // 只在启动时应用；本次使用中取消静音不会关闭此偏好。
-    const muteOnStartup = p.muteOnStartup !== false;
-    return {
-      ...p,
-      followAuthors: p.followAuthors && typeof p.followAuthors === "object" ? p.followAuthors : {},
-      videoSnapshots: p.videoSnapshots && typeof p.videoSnapshots === "object" ? p.videoSnapshots : {},
-      videoOrientations: p.videoOrientations && typeof p.videoOrientations === "object" ? p.videoOrientations : {},
-      landscapeFitPref: p.landscapeFitPref === "cover" ? "cover" : "contain",
-      muteOnStartup,
-      muted: muteOnStartup || p.muted === true,
-      history: normalizeHistory(p.history),
-    };
-  } catch {
-    return DEFAULTS;
-  }
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Persist & CachePersist>;
+      if (parsed.videoSnapshots && typeof parsed.videoSnapshots === "object") legacySnapshots = parsed.videoSnapshots;
+      if (parsed.videoOrientations && typeof parsed.videoOrientations === "object") legacyOrientations = parsed.videoOrientations;
+      const muteOnStartup = parsed.muteOnStartup !== false;
+      persist = {
+        likes: Array.isArray(parsed.likes) ? parsed.likes : DEFAULTS.likes,
+        favs: Array.isArray(parsed.favs) ? parsed.favs : DEFAULTS.favs,
+        history: normalizeHistory(parsed.history),
+        follows: Array.isArray(parsed.follows) ? parsed.follows : DEFAULTS.follows,
+        followAuthors: parsed.followAuthors && typeof parsed.followAuthors === "object" ? parsed.followAuthors : {},
+        landscapeFitPref: parsed.landscapeFitPref === "cover" ? "cover" : "contain",
+        muted: muteOnStartup || parsed.muted === true,
+        muteOnStartup,
+        volume: typeof parsed.volume === "number" ? parsed.volume : DEFAULTS.volume,
+        searchHist: Array.isArray(parsed.searchHist) ? parsed.searchHist : DEFAULTS.searchHist,
+      };
+    }
+  } catch { /* ignore */ }
+
+  let cache: CachePersist = CACHE_DEFAULTS;
+  let migratedCache = false;
+  try {
+    const rawCache = localStorage.getItem(LS_CACHE);
+    if (rawCache) {
+      const parsedCache = JSON.parse(rawCache) as Partial<CachePersist>;
+      cache = {
+        videoSnapshots: parsedCache.videoSnapshots && typeof parsedCache.videoSnapshots === "object" ? parsedCache.videoSnapshots : {},
+        videoOrientations: parsedCache.videoOrientations && typeof parsedCache.videoOrientations === "object" ? parsedCache.videoOrientations : {},
+      };
+    } else if (legacySnapshots || legacyOrientations) {
+      cache = {
+        videoSnapshots: legacySnapshots || {},
+        videoOrientations: legacyOrientations || {},
+      };
+      migratedCache = true;
+    }
+  } catch { /* ignore */ }
+  return { persist, cache, migratedCache };
 }
 
 const isApple = envPlatform === "ios" || envPlatform === "macos";
@@ -188,9 +219,20 @@ export const useStore = () => useContext(Ctx);
 let seq = 0;
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [p, setP] = useState<Persist>(loadPersist);
+  const initialRef = useRef<ReturnType<typeof loadPersistState> | null>(null);
+  if (!initialRef.current) initialRef.current = loadPersistState();
+  const [p, setP] = useState<Persist>(initialRef.current.persist);
+  const [cache, setCache] = useState<CachePersist>(initialRef.current.cache);
   const pRef = useRef(p);
   pRef.current = p;
+  const cacheRef = useRef(cache);
+  cacheRef.current = cache;
+  const dirtyPRef = useRef(initialRef.current.migratedCache);
+  const dirtyCacheRef = useRef(initialRef.current.migratedCache);
+  const skipFirstPRef = useRef(true);
+  const skipFirstCacheRef = useRef(true);
+  const pTimerRef = useRef<number | undefined>(undefined);
+  const cacheTimerRef = useRef<number | undefined>(undefined);
   const [themePref, setThemePref] = useState<ThemePref>(readThemePref);
   const [sysTheme, setSysTheme] = useState<Theme>(systemTheme);
   const theme: Theme = themePref === "system" ? sysTheme : themePref;
@@ -232,9 +274,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch { /* ignore */ }
   }, [theme, themePref]);
 
+  const flushPersist = useCallback(() => {
+    window.clearTimeout(pTimerRef.current);
+    pTimerRef.current = undefined;
+    window.clearTimeout(cacheTimerRef.current);
+    cacheTimerRef.current = undefined;
+    if (dirtyPRef.current) {
+      dirtyPRef.current = false;
+      try { localStorage.setItem(LS, JSON.stringify(pRef.current)); } catch { /* ignore */ }
+    }
+    if (dirtyCacheRef.current) {
+      dirtyCacheRef.current = false;
+      try { localStorage.setItem(LS_CACHE, JSON.stringify(cacheRef.current)); } catch { /* ignore */ }
+    }
+  }, []);
+
   useEffect(() => {
-    try { localStorage.setItem(LS, JSON.stringify(p)); } catch { /* ignore */ }
+    if (skipFirstPRef.current) {
+      skipFirstPRef.current = false;
+      if (!dirtyPRef.current) return;
+    } else {
+      dirtyPRef.current = true;
+    }
+    window.clearTimeout(pTimerRef.current);
+    pTimerRef.current = window.setTimeout(() => {
+      pTimerRef.current = undefined;
+      dirtyPRef.current = false;
+      try { localStorage.setItem(LS, JSON.stringify(pRef.current)); } catch { /* ignore */ }
+    }, 1500);
   }, [p]);
+
+  useEffect(() => {
+    if (skipFirstCacheRef.current) {
+      skipFirstCacheRef.current = false;
+      if (!dirtyCacheRef.current) return;
+    } else {
+      dirtyCacheRef.current = true;
+    }
+    window.clearTimeout(cacheTimerRef.current);
+    cacheTimerRef.current = window.setTimeout(() => {
+      cacheTimerRef.current = undefined;
+      dirtyCacheRef.current = false;
+      try { localStorage.setItem(LS_CACHE, JSON.stringify(cacheRef.current)); } catch { /* ignore */ }
+    }, 2000);
+  }, [cache]);
+
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flushPersist();
+    };
+    window.addEventListener("pagehide", flushPersist);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("pagehide", flushPersist);
+      document.removeEventListener("visibilitychange", onHide);
+      flushPersist();
+    };
+  }, [flushPersist]);
 
   const mergeUserInteractions = useCallback((u: User | null) => {
     const inter = u?.interactions;
@@ -405,7 +501,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const upsertVideoSnapshot = useCallback((snap: Omit<VideoSnapshot, "updatedAt">) => {
     if (!snap.id || !snap.title) return;
-    setP((s) => {
+    setCache((s) => {
       const cur = s.videoSnapshots[snap.id];
       const nextEntry: VideoSnapshot = { ...cur, ...snap, updatedAt: Date.now() };
       const map: Record<number, VideoSnapshot> = { ...s.videoSnapshots, [snap.id]: nextEntry };
@@ -426,7 +522,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const recordVideoOrientation = useCallback((id: number, w: number, h: number) => {
     if (!id || w <= 0 || h <= 0) return;
     const orientation: VideoOrientationMeta["orientation"] = w > h ? "landscape" : "portrait";
-    setP((s) => {
+    setCache((s) => {
       const prev = s.videoOrientations[id];
       if (prev && prev.orientation === orientation && prev.w === w && prev.h === h) return s;
       const entries = Object.entries(s.videoOrientations);
@@ -438,7 +534,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ...s, videoOrientations: map };
     });
   }, []);
-  const getVideoOrientation = useCallback((id: number) => pRef.current.videoOrientations[id], []);
+  const getVideoOrientation = useCallback((id: number) => cacheRef.current.videoOrientations[id], []);
   const setLandscapeFitPref = useCallback((fit: "contain" | "cover") => {
     setP((s) => (s.landscapeFitPref === fit ? s : { ...s, landscapeFitPref: fit }));
   }, []);
@@ -496,7 +592,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     tab, setTab, stack, push, pop,
     user, setUser, mergeUserInteractions, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, logout,
     likes: p.likes, favs: p.favs, history: p.history, follows: p.follows,
-    followAuthors: p.followAuthors, videoSnapshots: p.videoSnapshots,
+    followAuthors: p.followAuthors, videoSnapshots: cache.videoSnapshots,
     upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation,
     landscapeFitPref: p.landscapeFitPref, setLandscapeFitPref,
     isLiked: (id) => p.likes.includes(id),
@@ -511,7 +607,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     homeRefresh, bumpHomeRefresh,
     toasts, toast,
   }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, mergeUserInteractions, loginOpen, linePickerOpen, shortcutsOpen, logout,
-    p, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
+    p, cache, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
     toggleLikeLocal, toggleFavLocal, removeFav, removeLike, removeHistory, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, removeSearchHist, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion, homeRefresh, bumpHomeRefresh, toasts, toast, theater, setTheater, fs, setFs]);

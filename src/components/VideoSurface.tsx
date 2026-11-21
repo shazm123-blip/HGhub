@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, forwardRef, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, forwardRef, useState } from "react";
 import Hls from "hls.js";
 import { isLocalMedia, mediaUrl, platform } from "../api";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
@@ -62,8 +62,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const recoverTimerRef = useRef<number | null>(null);
   const seekCleanupRef = useRef<(() => void) | null>(null);
   const lastSizeRef = useRef({ w: 0, h: 0 });
+  const lastBufferedRef = useRef(-1);
   const [ready, setReady] = useState(false);
-  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { ...diagnosticContext, active, resource: mediaResource(src) });
+  const resource = useMemo(() => mediaResource(src), [src]);
+  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { ...diagnosticContext, active, resource });
   const activity = usePlaybackActivity(videoRef, hlsRef, {
     active,
     autoPlay,
@@ -78,23 +80,27 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const reportBuffered = (v: HTMLVideoElement) => {
     if (!onBuffered) return;
     const dur = v.duration;
-    if (!dur || !Number.isFinite(dur) || dur <= 0 || v.buffered.length === 0) {
-      onBuffered(0);
-      return;
-    }
-    let end = 0;
-    const cur = v.currentTime || 0;
-    for (let i = 0; i < v.buffered.length; i++) {
-      const s = v.buffered.start(i);
-      const e = v.buffered.end(i);
-      if (cur >= s - 0.5 && cur <= e + 0.5) {
-        end = Math.max(end, e);
+    let ratio = 0;
+    if (dur && Number.isFinite(dur) && dur > 0 && v.buffered.length > 0) {
+      let end = 0;
+      const cur = v.currentTime || 0;
+      for (let i = 0; i < v.buffered.length; i++) {
+        const s = v.buffered.start(i);
+        const e = v.buffered.end(i);
+        if (cur >= s - 0.5 && cur <= e + 0.5) {
+          end = Math.max(end, e);
+        }
       }
+      if (end === 0) {
+        end = v.buffered.end(v.buffered.length - 1);
+      }
+      ratio = Math.max(0, Math.min(1, end / dur));
     }
-    if (end === 0) {
-      end = v.buffered.end(v.buffered.length - 1);
-    }
-    onBuffered(Math.max(0, Math.min(1, end / dur)));
+    const prev = lastBufferedRef.current;
+    if (prev === ratio) return;
+    if (prev >= 0 && ratio > 0 && ratio < 1 && Math.abs(ratio - prev) < 0.005) return;
+    lastBufferedRef.current = ratio;
+    onBuffered(ratio);
   };
 
   const reportSizeAndDuration = (v: HTMLVideoElement) => {
@@ -198,6 +204,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     setReady(false);
     recoverCountRef.current = 0;
     lastSizeRef.current = { w: 0, h: 0 };
+    lastBufferedRef.current = -1;
     seekCleanupRef.current?.();
     seekCleanupRef.current = null;
     if (recoverTimerRef.current) {
@@ -397,7 +404,6 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         onTimeUpdate={(e) => {
           const v = e.target as HTMLVideoElement;
           onTime?.(v.currentTime);
-          reportBuffered(v);
           if (lastSizeRef.current.w === 0 && v.videoWidth > 0) {
             reportSizeAndDuration(v);
           }

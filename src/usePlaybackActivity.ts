@@ -1,7 +1,7 @@
-import { useCallback, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type Hls from "hls.js";
 
-/** Keep asynchronous autoplay and error recovery subject to the latest page activity. */
+/** Keep asynchronous autoplay and error recovery subject to the latest page activity & app visibility. */
 export function usePlaybackActivity(
   videoRef: RefObject<HTMLVideoElement | null>, hlsRef: RefObject<Hls | null>,
   { active, autoPlay, src, trace, onPlayRejected }: {
@@ -10,10 +10,23 @@ export function usePlaybackActivity(
     onPlayRejected?: (errorName?: string) => void;
   },
 ) {
-  const latest = useRef({ active, trace, onPlayRejected }); latest.current = { active, trace, onPlayRejected };
+  const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const sync = () => setVisible(document.visibilityState !== "hidden" || !!document.pictureInPictureElement);
+    document.addEventListener("visibilitychange", sync);
+    document.addEventListener("leavepictureinpicture", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      document.removeEventListener("leavepictureinpicture", sync);
+    };
+  }, []);
+
+  const effectiveActive = active && visible;
+  const latest = useRef({ active: effectiveActive, trace, onPlayRejected }); latest.current = { active: effectiveActive, trace, onPlayRejected };
   const wanted = useRef(autoPlay);
   const mounted = useRef(true);
-  const previous = useRef(active);
+  const previous = useRef(effectiveActive);
   useLayoutEffect(() => { wanted.current = autoPlay; }, [src, autoPlay]);
 
   const play = useCallback((source: string, automatic = false) => {
@@ -48,19 +61,19 @@ export function usePlaybackActivity(
     if (!v) return;
     mounted.current = true;
     const hls = hlsRef.current;
-    if (!active) {
+    if (!effectiveActive) {
       // Include pauses made through native/PiP controls, which bypass our buttons.
       if (v.readyState >= 2) wanted.current = !v.paused;
       v.pause();
-      // Let an in-flight manifest finish, but stop fragment loading for hidden pages.
+      // Let an in-flight manifest finish, but stop fragment loading for hidden pages / backgrounded windows.
       if (hls?.levels.length) hls.stopLoad();
       latest.current.trace("page.suspended", { play_wanted: wanted.current });
     } else if (!previous.current) {
       if (hls?.levels.length && !hls.loadingEnabled) hls.startLoad(v.currentTime);
       if (wanted.current && (hls?.levels.length || v.readyState > 0)) play("page_active", true);
     }
-    previous.current = active;
-  }, [active, play]);
+    previous.current = effectiveActive;
+  }, [effectiveActive, play]);
 
   useLayoutEffect(() => {
     const v = videoRef.current;

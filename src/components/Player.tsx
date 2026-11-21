@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { fmtTime, isLocalMedia, isMobile, mediaUrl, platform } from "../api";
 import { pushBackHandler } from "../back";
@@ -35,7 +35,9 @@ export default function Player({
   const hlsRef = useRef<Hls | null>(null);
   const recoverCountRef = useRef(0);
   const hideControlsTimerRef = useRef<number | null>(null);
-  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { view: "post_detail", ...diagnosticContext, active, resource: mediaResource(src) });
+  const lastTimeRef = useRef(-1);
+  const resource = useMemo(() => mediaResource(src), [src]);
+  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { view: "post_detail", ...diagnosticContext, active, resource });
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const activity = usePlaybackActivity(videoRef, hlsRef, {
@@ -94,6 +96,7 @@ export default function Player({
     }
     video.currentTime = target;
     trace("seek.assigned", { target, source });
+    lastTimeRef.current = target;
     setTime(target);
   };
 
@@ -109,6 +112,7 @@ export default function Player({
     const useHls = !url.includes("/seg?u=");
     const isIos = platform === "ios";
     recoverCountRef.current = 0;
+    lastTimeRef.current = -1;
     setErrMsg("");
     trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay });
 
@@ -431,7 +435,13 @@ export default function Player({
         onWaiting={() => setWaiting(true)}
         onPlaying={() => { if (activity.isActive()) { setWaiting(false); setErrMsg(""); onPlaying?.(); } }}
         onSeeked={() => setWaiting(false)}
-        onTimeUpdate={(e) => setTime((e.target as HTMLVideoElement).currentTime)}
+        onTimeUpdate={(e) => {
+          const t = (e.target as HTMLVideoElement).currentTime;
+          if (lastTimeRef.current < 0 || Math.abs(t - lastTimeRef.current) >= 0.25) {
+            lastTimeRef.current = t;
+            setTime(t);
+          }
+        }}
         onLoadedMetadata={(e) => {
           const v = e.target as HTMLVideoElement;
           v.volume = volume;

@@ -249,7 +249,9 @@ pub async fn load_image(url: &str) -> Result<(String, Arc<Vec<u8>>), String> {
         }
     }
     let (_, bytes) = fetch_bytes(&resolved).await?;
-    let (kind, plain) = decode_image_bytes(bytes)?;
+    let (kind, plain) = tokio::task::spawn_blocking(move || decode_image_bytes(bytes))
+        .await
+        .map_err(|_| "封面解密任务中断".to_string())??;
     let len = plain.len();
     let arc = Arc::new(plain);
     lock_cache(&IMG_CACHE).put(resolved, arc.clone(), len);
@@ -516,7 +518,7 @@ fn parse_byte_range(header: &str, total: usize) -> Result<Option<(usize, usize)>
 
 fn respond_bytes(
     ctype: &str,
-    body: &[u8],
+    body: Arc<Vec<u8>>,
     cache: &str,
     range: Option<&str>,
 ) -> Response<Vec<u8>> {
@@ -555,14 +557,15 @@ fn respond_bytes(
             Ok(None) => {}
         }
     }
-    respond(200, ctype, body.to_vec(), cache)
+    let owned = Arc::try_unwrap(body).unwrap_or_else(|arc| (*arc).clone());
+    respond(200, ctype, owned, cache)
 }
 
 /// 主清单的子清单也经 /seg 返回：必须继续改写，不能把内层 URL 原样交给播放器。
 fn segment_response(
     target: &str,
     ctype: Option<&str>,
-    bytes: &[u8],
+    bytes: Arc<Vec<u8>>,
     origin: &str,
     range: Option<&str>,
 ) -> Response<Vec<u8>> {
@@ -570,7 +573,7 @@ fn segment_response(
         || bytes.starts_with(b"#EXTM3U")
         || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U");
     if playlist {
-        return match std::str::from_utf8(bytes) {
+        return match std::str::from_utf8(bytes.as_slice()) {
             Ok(text) => respond(
                 200,
                 "application/vnd.apple.mpegurl",
@@ -614,20 +617,27 @@ pub async fn handle(
         return respond(400, "text/plain", b"missing u".to_vec(), "no-store");
     }
 
-    let started = std::time::Instant::now();
-    let route = match path {
-        "/img" => "image",
-        "/hls" => "playlist",
-        "/seg" => "segment_or_key",
-        _ => "unknown",
+    let log_enabled = crate::playback_log::enabled();
+    let log_meta = if log_enabled {
+        let route = match path {
+            "/img" => "image",
+            "/hls" => "playlist",
+            "/seg" => "segment_or_key",
+            _ => "unknown",
+        };
+        let resource = crate::playback_log::resource_id(&target);
+        crate::playback_log::record(
+            "proxy.begin",
+            serde_json::json!({"route": route, "resource": &resource}),
+        );
+        Some((std::time::Instant::now(), route, resource))
+    } else {
+        None
     };
-    crate::playback_log::record(
-        "proxy.begin",
-        serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target)}),
-    );
+
     let response = match path {
         "/img" => match load_image(&target).await {
-            Ok((kind, bytes)) => respond_bytes(&kind, bytes.as_ref(), "public, max-age=86400", range),
+            Ok((kind, bytes)) => respond_bytes(&kind, bytes, "public, max-age=86400", range),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         "/hls" => match load_playlist(&target, origin).await {
@@ -641,16 +651,18 @@ pub async fn handle(
         },
         "/seg" => match load_segment(&target).await {
             Ok((ctype, bytes)) => {
-                segment_response(&target, ctype.as_deref(), bytes.as_ref(), origin, range)
+                segment_response(&target, ctype.as_deref(), bytes, origin, range)
             }
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         _ => respond(404, "text/plain", b"not found".to_vec(), "no-store"),
     };
-    crate::playback_log::record(
-        "proxy.end",
-        serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target), "status": response.status().as_u16(), "bytes": response.body().len(), "elapsed_ms": started.elapsed().as_millis() as u64}),
-    );
+    if let Some((started, route, resource)) = log_meta {
+        crate::playback_log::record(
+            "proxy.end",
+            serde_json::json!({"route": route, "resource": resource, "status": response.status().as_u16(), "bytes": response.body().len(), "elapsed_ms": started.elapsed().as_millis() as u64}),
+        );
+    }
     response
 }
 
@@ -686,7 +698,7 @@ mod tests {
         let response = segment_response(
             "https://cdn.example/master.m3u8",
             Some("application/octet-stream"),
-            text.as_bytes(),
+            Arc::new(text.as_bytes().to_vec()),
             LOCAL_ORIGIN,
             None,
         );
@@ -709,7 +721,7 @@ mod tests {
         let bom = segment_response(
             "https://cdn.example/list.m3u8",
             None,
-            b"\xef\xbb\xbf#EXTM3U\nsegment.ts\n",
+            Arc::new(b"\xef\xbb\xbf#EXTM3U\nsegment.ts\n".to_vec()),
             LOCAL_ORIGIN,
             None,
         );
@@ -753,35 +765,35 @@ mod tests {
 
     #[test]
     fn range_requests_return_206_and_416_correctly() {
-        let payload = b"0123456789";
-        let full = respond_bytes("video/mp4", payload, "public, max-age=3600", None);
+        let payload = Arc::new(b"0123456789".to_vec());
+        let full = respond_bytes("video/mp4", payload.clone(), "public, max-age=3600", None);
         assert_eq!(full.status(), 200);
-        assert_eq!(full.body(), payload);
+        assert_eq!(full.body(), payload.as_slice());
 
-        let r1 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=2-5"));
+        let r1 = respond_bytes("video/mp4", payload.clone(), "public, max-age=3600", Some("bytes=2-5"));
         assert_eq!(r1.status(), 206);
         assert_eq!(r1.body(), b"2345");
         assert_eq!(r1.headers()["Content-Range"], "bytes 2-5/10");
         assert_eq!(r1.headers()["Content-Length"], "4");
 
-        let r2 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=7-99"));
+        let r2 = respond_bytes("video/mp4", payload.clone(), "public, max-age=3600", Some("bytes=7-99"));
         assert_eq!(r2.status(), 206);
         assert_eq!(r2.body(), b"789");
         assert_eq!(r2.headers()["Content-Range"], "bytes 7-9/10");
 
-        let r3 = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=-3"));
+        let r3 = respond_bytes("video/mp4", payload.clone(), "public, max-age=3600", Some("bytes=-3"));
         assert_eq!(r3.status(), 206);
         assert_eq!(r3.body(), b"789");
         assert_eq!(r3.headers()["Content-Range"], "bytes 7-9/10");
 
-        let bad = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=10-12"));
+        let bad = respond_bytes("video/mp4", payload.clone(), "public, max-age=3600", Some("bytes=10-12"));
         assert_eq!(bad.status(), 416);
         assert_eq!(bad.headers()["Content-Range"], "bytes */10");
 
         let rev = respond_bytes("video/mp4", payload, "public, max-age=3600", Some("bytes=6-2"));
         assert_eq!(rev.status(), 416);
 
-        let empty_bad = respond_bytes("video/mp4", b"", "public, max-age=3600", Some("bytes=0-0"));
+        let empty_bad = respond_bytes("video/mp4", Arc::new(Vec::new()), "public, max-age=3600", Some("bytes=0-0"));
         assert_eq!(empty_bad.status(), 416);
         assert_eq!(empty_bad.headers()["Content-Range"], "bytes */0");
     }

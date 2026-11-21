@@ -164,22 +164,46 @@ export function usePlayerDiagnostics(videoRef: RefObject<HTMLVideoElement | null
     };
     const events = ["loadstart", "loadedmetadata", "loadeddata", "play", "pause", "playing", "waiting", "stalled", "seeking", "seeked", "ended", "error", "emptied", "abort", "ratechange", "volumechange", "canplay"];
     events.forEach(event => v.addEventListener(event, onEvent));
-    const stateChange = () => { if (playbackLogEnabled()) emit("player.snapshot"); else pending.current = null; };
-    const unsubscribe = subscribe(stateChange);
-    const heartbeat = setInterval(() => {
-      if (!playbackLogEnabled()) return;
-      const p = pending.current;
-      if (p && performance.now() - p.start > 8000 && timeoutReported !== p.id) {
-        timeoutReported = p.id;
-        emit("seek.timeout", { seek: p.id, target: round(p.target), elapsed_ms: Math.round(performance.now() - p.start) });
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const stopHeartbeat = () => {
+      if (heartbeat !== undefined) {
+        clearInterval(heartbeat);
+        heartbeat = undefined;
       }
-      if (performance.now() - lastHeartbeat >= 5000) { lastHeartbeat = performance.now(); emit("player.heartbeat"); }
-    }, 1000);
+    };
+    const syncHeartbeat = () => {
+      if (playbackLogEnabled()) {
+        if (heartbeat === undefined) {
+          lastHeartbeat = performance.now();
+          heartbeat = setInterval(() => {
+            if (!playbackLogEnabled()) {
+              stopHeartbeat();
+              return;
+            }
+            const p = pending.current;
+            if (p && performance.now() - p.start > 8000 && timeoutReported !== p.id) {
+              timeoutReported = p.id;
+              emit("seek.timeout", { seek: p.id, target: round(p.target), elapsed_ms: Math.round(performance.now() - p.start) });
+            }
+            if (performance.now() - lastHeartbeat >= 5000) { lastHeartbeat = performance.now(); emit("player.heartbeat"); }
+          }, 1000);
+        }
+      } else {
+        stopHeartbeat();
+      }
+    };
+    const stateChange = () => {
+      syncHeartbeat();
+      if (playbackLogEnabled()) emit("player.snapshot");
+      else pending.current = null;
+    };
+    const unsubscribe = subscribe(stateChange);
+    syncHeartbeat();
     emit("player.mount");
     return () => {
       emit("player.unmount");
       events.forEach(event => v.removeEventListener(event, onEvent));
-      clearInterval(heartbeat); unsubscribe();
+      stopHeartbeat(); unsubscribe();
       if (frame != null) v.cancelVideoFrameCallback?.(frame);
     };
   }, []);

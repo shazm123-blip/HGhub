@@ -43,6 +43,10 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
   }, [tab]);
 
   useEffect(() => {
+    cacheRef.current.clear();
+  }, [lineVersion]);
+
+  useEffect(() => {
     if (!active || tab === "follow") return undefined;
     let alive = true;
     const ids = visibleKey ? visibleKey.split(",").map(Number) : [];

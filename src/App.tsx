@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore, type Page, type Tab } from "./store";
 import { isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
@@ -9,15 +9,17 @@ import Home from "./pages/Home";
 import Search, { RankPage } from "./pages/Search";
 import Category, { ChannelPage } from "./pages/Category";
 import Profile from "./pages/Profile";
-import SettingsPage from "./pages/Settings";
 import Feed from "./components/Feed";
-import { PostsPage, PostDetail } from "./pages/Posts";
 import LoginModal from "./components/LoginModal";
 import LinePicker from "./components/LinePicker";
 import { Modal, ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar, MacToolbar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
+
+const SettingsPage = lazy(() => import("./pages/Settings"));
+const PostsPage = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostsPage })));
+const PostDetail = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostDetail })));
 
 /* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
 function TabBar() {
@@ -140,7 +142,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
     return () => window.removeEventListener("keydown", fn);
   }, [stack.length, pop, setTab, loginOpen, setLoginOpen, linePickerOpen, shortcutsOpen, setShortcutsOpen]);
 
-  const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
+  const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none tab-hidden");
   const modalBlocking = loginOpen || linePickerOpen || shortcutsOpen;
   const pageActive = stack.length === 0 && !modalBlocking;
   const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 49 : 50) : 14;
@@ -158,7 +160,9 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 
         {stack.map((p, i) => (
           <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
-            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !modalBlocking} bottomInset={stackInset} />
+            <Suspense fallback={<div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>}>
+              <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !modalBlocking} bottomInset={stackInset} />
+            </Suspense>
             {platform === "ios" && i === stack.length - 1 && !modalBlocking && !fs && <IosBackEdge onBack={pop} />}
           </div>
         ))}

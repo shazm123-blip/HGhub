@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtTime } from "../api";
 import { useSeekInput } from "../useSeekInput";
+import { useProgress, type PlaybackProgressBus } from "../playbackProgress";
 import { ICheck, ICompress, IExpand, ILockF, INext, IPauseF, IPip, IPlayF, ITheater, IVol, IVolMute } from "../icons";
 
 type Props = {
   paused: boolean;
-  time: number;
+  time?: number;
   duration: number;
   buffered?: number;
+  progressBus?: PlaybackProgressBus;
   rate: number;
   muted: boolean;
   volume: number;
@@ -38,13 +40,16 @@ type Props = {
 const clock = (s: number) => fmtTime(Math.max(0, s || 0)).padStart(5, "0");
 
 export default function PlayerControls({
-  paused, time, duration, buffered = 0, rate, muted, volume, orientationLabel, theater = false, fullscreen = false,
+  paused, time, duration, buffered, progressBus, rate, muted, volume, orientationLabel, theater = false, fullscreen = false,
   visible = true, seekEnabled = true, seekKey, prevDisabled = false, prevTitle = "上一个", nextDisabled = false, nextTitle = "下一个",
   onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onPrev, onNext,
 }: Props) {
   const [speedOpen, setSpeedOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
-  const seek = useSeekInput({ time, duration, enabled: seekEnabled, resetKey: seekKey, onInteraction: onSeekInteraction,
+  const busSnap = useProgress(progressBus);
+  const effectiveTime = time ?? busSnap?.time ?? 0;
+  const effectiveBuffered = buffered ?? busSnap?.buffered ?? 0;
+  const seek = useSeekInput({ time: effectiveTime, duration, enabled: seekEnabled, resetKey: seekKey, onInteraction: onSeekInteraction,
     onSeek: (target, input) => onSeek(target, `desktop_${input}`) });
   const pct = duration ? Math.min(100, (seek.time / duration) * 100) : 0;
 
@@ -60,7 +65,7 @@ export default function PlayerControls({
       onPointerDown={(e) => e.stopPropagation()}>
       <div className={`desktop-seek ${seekEnabled ? "is-seekable" : ""}`}>
         <div className="desktop-seek-track">
-          <span className="desktop-seek-buffer" style={{ width: `${Math.min(1, buffered) * 100}%` }} />
+          <span className="desktop-seek-buffer" style={{ width: `${Math.min(1, effectiveBuffered) * 100}%` }} />
           <span className="desktop-seek-played" style={{ width: `${pct}%` }} />
         </div>
         <input aria-label="播放进度" type="range" {...seek.inputProps} />
