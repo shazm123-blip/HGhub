@@ -488,6 +488,14 @@ fn validate_category_slug(cate: &str) -> Result<&str, String> {
     Ok(trimmed)
 }
 
+fn category_api_path(cate: &str, page: u32, size: u32) -> String {
+    if cate == "original" {
+        format!("/api/videos?is_original=1&sort=new&page={page}&size={size}")
+    } else {
+        format!("/api/videos/category/{cate}?sort=new&page={page}&size={size}")
+    }
+}
+
 #[tauri::command]
 pub async fn api_category(
     state: State<'_, Api>,
@@ -496,11 +504,8 @@ pub async fn api_category(
     size: u32,
 ) -> Result<Value, String> {
     let cate = validate_category_slug(&cate)?;
-    state
-        .get(&format!(
-            "/api/videos/category/{cate}?page={page}&size={size}"
-        ))
-        .await
+    let path = category_api_path(cate, page, size);
+    state.get(&path).await
 }
 
 #[tauri::command]
@@ -700,7 +705,9 @@ pub async fn api_post_comments(
 }
 #[cfg(test)]
 mod tests {
-    use super::{has_play_url, is_newer, normalize_play_info, validate_category_slug};
+    use super::{
+        category_api_path, has_play_url, is_newer, normalize_play_info, validate_category_slug,
+    };
     use serde_json::{json, Value};
 
     #[test]
@@ -787,5 +794,17 @@ mod tests {
         for bad in ["", "   ", "../admin", "a/b", "ai?page=1", "ai#frag", "中文"] {
             assert!(validate_category_slug(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn category_api_path_routes_original_and_standard_slugs() {
+        assert_eq!(
+            category_api_path("original", 2, 20),
+            "/api/videos?is_original=1&sort=new&page=2&size=20"
+        );
+        assert_eq!(
+            category_api_path("ai-duanju", 2, 20),
+            "/api/videos/category/ai-duanju?sort=new&page=2&size=20"
+        );
     }
 }

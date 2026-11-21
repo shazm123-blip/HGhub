@@ -8,10 +8,9 @@ import { Empty, Img } from "../components/ui";
 import { IBack, IChevR, IGrid, IRefresh, ITrophy } from "../icons";
 
 export const CHANNELS = [
+  { cate: "original", name: "黄果原创", desc: "原创短剧与漫剧" },
   { cate: "ai-duanju", name: "AI成人短剧", desc: "高能反转 · 一口气看完" },
   { cate: "ai-manju", name: "AI成人漫剧", desc: "国创漫剧 · 每周更新" },
-  { cate: "ai-huanlian", name: "AI换脸", desc: "换脸演绎 · 全新剧情" },
-  { cate: "ai-mogai", name: "AI魔改", desc: "魔改名场面 · 脑洞大开" },
 ] as const;
 
 /* ================= 分类总览 ================= */
@@ -24,7 +23,7 @@ export default function Category({ wide: _wide, active }: { wide: boolean; activ
   const [refreshing, setRefreshing] = useState(false);
   const mounted = useRef(false);
   const started = useRef(false);
-  const pending = useRef(new Set<string>());
+  const pending = useRef(new Map<string, symbol>());
   const lastLineVersion = useRef(lineVersion);
 
   useEffect(() => {
@@ -34,23 +33,26 @@ export default function Category({ wide: _wide, active }: { wide: boolean; activ
 
   const loadPreview = useCallback(async (key: string, force = false) => {
     if (!force && pending.current.has(key)) return;
-    pending.current.add(key);
+    const request = Symbol(key);
+    pending.current.set(key, request);
+    const isCurrent = () => mounted.current && pending.current.get(key) === request;
     setLoading(m => ({ ...m, [key]: true }));
     setErrors(m => ({ ...m, [key]: "" }));
-    const lineAtStart = lastLineVersion.current;
     try {
       if (key === "posts") {
         const result = await api.posts(1, 8);
-        if (mounted.current && lineAtStart === lastLineVersion.current) setPosts(result?.items || []);
+        if (isCurrent()) setPosts(result?.items || []);
       } else {
         const result = await api.category(key, 1, 8);
-        if (mounted.current && lineAtStart === lastLineVersion.current) setRows(m => ({ ...m, [key]: result?.items || [] }));
+        if (isCurrent()) setRows(m => ({ ...m, [key]: result?.items || [] }));
       }
     } catch (error) {
-      if (mounted.current && lineAtStart === lastLineVersion.current) setErrors(m => ({ ...m, [key]: (error as Error).message || "加载失败" }));
+      if (isCurrent()) setErrors(m => ({ ...m, [key]: (error as Error).message || "加载失败" }));
     } finally {
-      pending.current.delete(key);
-      if (mounted.current) setLoading(m => ({ ...m, [key]: false }));
+      if (isCurrent()) {
+        pending.current.delete(key);
+        setLoading(m => ({ ...m, [key]: false }));
+      }
     }
   }, []);
 

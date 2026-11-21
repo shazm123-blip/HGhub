@@ -70,6 +70,9 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     if (status === "401") {
       throw new Error("登录已过期，请重新登录");
     }
+    if (status === "410") {
+      throw new Error("该频道或内容已下线");
+    }
     if (status) {
       throw new Error(`服务器请求失败（HTTP ${status}），请稍后重试或在设置中切换线路`);
     }

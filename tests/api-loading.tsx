@@ -12,11 +12,11 @@ const fixture = {
   debug: [] as string[],
   ready: false,
   setActive: (_active: boolean) => {},
-  complete(cmd: string, key: string, result: "404" | "503" | "empty" | "item") {
+  complete(cmd: string, key: string, result: "404" | "410" | "503" | "empty" | "item") {
     const index = pending.findIndex(r => r.cmd === cmd && (!key || r.args.cate === key));
     if (index < 0) throw new Error(`No pending request: ${cmd}/${key}`);
     const request = pending.splice(index, 1)[0];
-    if (result === "404" || result === "503") {
+    if (result === "404" || result === "410" || result === "503") {
       request.reject(`HTTP ${result} Gateway: <html><h1>nginx error</h1></html>`);
       return;
     }

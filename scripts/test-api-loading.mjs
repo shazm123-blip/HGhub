@@ -47,27 +47,51 @@ try {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal((await calls()).length, 0, "Hidden categories must not prefetch");
   await page.evaluate(() => window.apiLoadingFixture.setActive(true));
-  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 5);
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 4);
   await complete("api_category", "ai-duanju", "item");
   await visible(page.getByText("已加载ai-duanju", { exact: true }));
-  await visible(page.getByRole("region", { name: "AI魔改", exact: true }).getByText("加载中…", { exact: true }));
-  await complete("api_category", "ai-huanlian", "empty");
-  await visible(page.getByRole("region", { name: "AI换脸", exact: true }).getByText("暂无内容", { exact: true }));
+  await visible(page.getByRole("region", { name: "黄果原创", exact: true }).getByText("加载中…", { exact: true }));
   await complete("api_posts", "", "item");
   await visible(page.getByText("已加载api_posts", { exact: true }));
   await complete("api_category", "ai-manju", "503");
   await page.getByRole("button", { name: "重试AI成人漫剧", exact: true }).click();
-  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 6);
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 5);
   await complete("api_category", "ai-manju", "item");
   await visible(page.getByText("已加载ai-manju", { exact: true }));
   assert.equal((await calls()).filter(r => r.args.cate === "ai-duanju").length, 1, "Retry must only reload the failed channel");
-  await complete("api_category", "ai-mogai", "404");
-  await visible(page.getByRole("button", { name: "重试AI魔改", exact: true }));
+  await complete("api_category", "original", "410");
+  await visible(page.getByRole("region", { name: "黄果原创", exact: true }).getByText("该频道或内容已下线", { exact: true }));
+  await visible(page.getByRole("button", { name: "重试黄果原创", exact: true }));
+  await page.getByRole("button", { name: "重试黄果原创", exact: true }).click();
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 6);
+  await complete("api_category", "original", "empty");
+  await visible(page.getByRole("region", { name: "黄果原创", exact: true }).getByText("暂无内容", { exact: true }));
   await page.evaluate(() => window.apiLoadingFixture.setActive(false));
   await page.evaluate(() => window.apiLoadingFixture.setActive(true));
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   assert.equal((await calls()).length, 6, "Revisiting must preserve previews without reloading all channels");
   report.passed.push("Category: defer hidden loading, show successful rows/posts before slow row, independent error/retry, preserve data on revisit");
+  // Refresh while the initial preview requests are still in flight.
+  await page.reload();
+  await page.waitForFunction(() => window.apiLoadingFixture.ready);
+  await page.evaluate(() => window.apiLoadingFixture.setActive(true));
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 4);
+  await page.getByRole("button", { name: "刷新分类" }).click();
+  await page.waitForFunction(() => window.apiLoadingFixture.history.length === 8);
+  assert.deepEqual((await calls()).slice(0, 4).map(r => r.args.cate || r.cmd).sort(),
+    ["ai-duanju", "ai-manju", "api_posts", "original"]);
+  await complete("api_category", "original", "410");
+  const original = page.getByRole("region", { name: "黄果原创", exact: true });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await original.getByText("加载中…", { exact: true }).count(), 1, "A stale failure must not end the current refresh");
+  await complete("api_category", "original", "item");
+  await visible(original.getByText("已加载original", { exact: true }));
+  for (const cate of ["ai-duanju", "ai-manju", ""]) {
+    const cmd = cate ? "api_category" : "api_posts";
+    await complete(cmd, cate, "empty");
+    await complete(cmd, cate, "item");
+  }
+  report.passed.push("Category: retired channels omitted; 410 message, empty state and overlapping refresh verified");
   assert.deepEqual(errors, [], "No page errors");
   assert.deepEqual(report.external, [], "No upstream traffic");
   await page.screenshot({ path: join(output, "final.png"), fullPage: true });
