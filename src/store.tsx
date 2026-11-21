@@ -6,6 +6,8 @@ import type { User } from "./types";
 
 export type Platform = "android" | "ios" | "windows" | "macos" | "linux";
 export type Theme = "dark" | "light";
+/** 外观偏好：system 跟随系统（Apple 平台默认） */
+export type ThemePref = Theme | "system";
 export type Tab = "home" | "search" | "category" | "profile";
 
 /** 播放页上下文：ids 是来源列表，index 是当前条目。 */
@@ -91,11 +93,21 @@ function loadPersist(): Persist {
   }
 }
 
-function readTheme(): Theme {
+const isApple = envPlatform === "ios" || envPlatform === "macos";
+const darkQuery = typeof window !== "undefined" && window.matchMedia
+  ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+const systemTheme = (): Theme => (darkQuery && !darkQuery.matches ? "light" : "dark");
+
+/* 新键 hghub_theme_pref 记偏好；旧键 hghub_theme 只记实际外观（旧版每次启动都会写入，
+   无法区分是否手动选过），所以 Apple 平台没有新键时一律按「跟随系统」处理。 */
+function readThemePref(): ThemePref {
   try {
+    const v = localStorage.getItem("hghub_theme_pref");
+    if (v === "light" || v === "dark" || v === "system") return v;
+    if (isApple) return "system";
     return localStorage.getItem("hghub_theme") === "light" ? "light" : "dark";
   } catch {
-    return "dark";
+    return isApple ? "system" : "dark";
   }
 }
 
@@ -103,12 +115,15 @@ function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle("theme-light", theme === "light");
   document.documentElement.style.colorScheme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", theme === "light" ? "#f9f9f9" : "#1a1a1a");
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--p-canvas").trim();
+  if (meta) meta.setAttribute("content", bg || (theme === "light" ? "#f9f9f9" : "#1a1a1a"));
 }
 
 type Store = {
   platform: Platform;
+  /** 实际生效的外观（已解析「跟随系统」） */
   theme: Theme; setTheme: (t: Theme) => void;
+  themePref: ThemePref; setThemePref: (t: ThemePref) => void;
   tab: Tab; setTab: (t: Tab) => void;
   stack: Page[]; push: (p: PageInput) => void; pop: () => void;
   user: User | null; setUser: (u: User | null) => void;
@@ -143,7 +158,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [p, setP] = useState<Persist>(loadPersist);
   const pRef = useRef(p);
   pRef.current = p;
-  const [theme, setThemeState] = useState<Theme>(readTheme);
+  const [themePref, setThemePref] = useState<ThemePref>(readThemePref);
+  const [sysTheme, setSysTheme] = useState<Theme>(systemTheme);
+  const theme: Theme = themePref === "system" ? sysTheme : themePref;
+  const setTheme = useCallback((t: Theme) => setThemePref(t), []);
   const [tab, setTabRaw] = useState<Tab>("home");
   const [stack, setStack] = useState<Page[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -161,9 +179,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const bumpLineVersion = useCallback(() => setLineVersion((v) => v + 1), []);
 
   useEffect(() => {
+    if (!darkQuery) return undefined;
+    const fn = () => setSysTheme(systemTheme());
+    darkQuery.addEventListener("change", fn);
+    return () => darkQuery.removeEventListener("change", fn);
+  }, []);
+
+  useEffect(() => {
     applyTheme(theme);
-    try { localStorage.setItem("hghub_theme", theme); } catch { /* ignore */ }
-  }, [theme]);
+    try {
+      localStorage.setItem("hghub_theme", theme);
+      localStorage.setItem("hghub_theme_pref", themePref);
+    } catch { /* ignore */ }
+  }, [theme, themePref]);
 
   useEffect(() => {
     try { localStorage.setItem(LS, JSON.stringify(p)); } catch { /* ignore */ }
@@ -314,7 +342,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     platform: envPlatform,
-    theme, setTheme: setThemeState,
+    theme, setTheme, themePref, setThemePref,
     tab, setTab, stack, push, pop,
     user, setUser, loginOpen, setLoginOpen, logout,
     likes: p.likes, favs: p.favs, history: p.history, follows: p.follows,
@@ -328,7 +356,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion,
     toasts, toast,
-  }), [theme, tab, setTab, stack, push, pop, user, loginOpen, logout,
+  }), [theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);

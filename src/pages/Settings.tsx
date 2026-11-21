@@ -15,8 +15,10 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 
 /* 独立设置页：线路 / 外观 / 播放 / 本地数据 / 清理缓存 / 网络诊断 / 关于
    入口：Windows 侧栏「设置」、Android「我的」右上角齿轮 */
+const isApple = platform === "ios" || platform === "macos";
+
 export default function Settings({ onBack, wide }: { onBack: () => void; wide: boolean }) {
-  const { theme, setTheme, favs, history, muteOnStartup, setMuteOnStartup, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity, toast } = useStore();
+  const { theme, setTheme, themePref, setThemePref, favs, history, muteOnStartup, setMuteOnStartup, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity, toast } = useStore();
   const [about, setAbout] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -70,11 +72,23 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
             <div className="flex items-center gap-3 px-3.5 py-3">
               <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
               <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-on">深色外观</div>
-                <div className="text-[10.5px] text-mut">跟随设计稿的 Fluent 深色</div>
+                <div className="text-[12.5px] text-on">{isApple ? "外观" : "深色外观"}</div>
+                <div className="text-[10.5px] text-mut">{isApple ? (themePref === "system" ? `跟随系统 · 当前${theme === "dark" ? "深色" : "浅色"}` : "已固定外观") : "跟随设计稿的 Fluent 深色"}</div>
               </div>
-              <Toggle on={theme === "dark"} onChange={(on) => setTheme(on ? "dark" : "light")} label="深色外观" />
+              {!isApple && <Toggle on={theme === "dark"} onChange={(on) => setTheme(on ? "dark" : "light")} label="深色外观" />}
             </div>
+            {isApple && (
+              <div className="px-3.5 pb-3 -mt-1">
+                <div role="radiogroup" aria-label="外观" className="flex p-[2px] rounded-[9px] bg-fill">
+                  {([["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]] as const).map(([k, label]) => (
+                    <button key={k} role="radio" aria-checked={themePref === k} onClick={() => setThemePref(k)}
+                      className={`flex-1 h-[30px] rounded-[7px] t-footnote transition-all duration-200 ${themePref === k ? "bg-s1 text-on font-semibold shadow-[0_3px_8px_rgba(0,0,0,.12),0_3px_1px_rgba(0,0,0,.04)]" : "text-on/80"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </Section>
 
           <Section title="播放">

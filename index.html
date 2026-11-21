@@ -8,11 +8,35 @@
     <meta name="theme-color" content="#1a1a1a" />
     <title>HGhub · 黄果短剧</title>
     <script>
-      try {
-        if (localStorage.getItem("hghub_theme") === "light") document.documentElement.classList.add("theme-light");
-      } catch (e) {}
+      /* 首帧前确定平台与外观，避免闪一下错误配色。平台判断与 src/api.ts 保持一致。 */
+      (function () {
+        var d = document.documentElement, ua = navigator.userAgent, mt = navigator.maxTouchPoints || 0;
+        var ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && mt > 1);
+        var android = /Android/i.test(ua);
+        var mac = !ios && /Macintosh|Mac OS X/i.test(ua);
+        var linux = !android && !ios && /Linux/i.test(ua);
+        var plat = android ? "android" : ios ? "ios" : mac ? "macos" : linux ? "linux" : "windows";
+        d.classList.add("plat-" + plat);
+        var apple = plat === "ios" || plat === "macos";
+        var pref = null;
+        try { pref = localStorage.getItem("hghub_theme_pref"); } catch (e) {}
+        if (pref !== "light" && pref !== "dark" && pref !== "system") {
+          /* 旧版只记了实际外观；Apple 平台默认跟随系统 */
+          var old = null;
+          try { old = localStorage.getItem("hghub_theme"); } catch (e) {}
+          pref = apple ? "system" : (old === "light" ? "light" : "dark");
+        }
+        var light = pref === "system"
+          ? !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches)
+          : pref === "light";
+        if (light) d.classList.add("theme-light");
+      })();
     </script>
-    <style>html,body{background:#1a1a1a}html.theme-light,html.theme-light body{background:#f3f3f3}</style>
+    <style>
+      html,body{background:#1a1a1a}html.theme-light,html.theme-light body{background:#f3f3f3}
+      html.plat-ios,html.plat-ios body{background:#000}html.plat-ios.theme-light,html.plat-ios.theme-light body{background:#f2f2f7}
+      html.plat-macos,html.plat-macos body{background:#1c1c1e}html.plat-macos.theme-light,html.plat-macos.theme-light body{background:#ececec}
+    </style>
   </head>
   <body>
     <div id="root"></div>

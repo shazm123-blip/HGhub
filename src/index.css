@@ -70,6 +70,123 @@ html.theme-light {
   --p-shadow: 0 18px 48px rgba(0, 0, 0, .14), 0 2px 8px rgba(0, 0, 0, .06);
 }
 
+/* ===================================================================
+   Apple 设计语言（仅 iOS / macOS）：html 上的 plat-ios / plat-macos 由
+   index.html 内联脚本在首帧前加上。Windows / Android 继续用上面的 Fluent。
+   注意：每个 Apple 色板都要写全所有 --p-* 变量——深色块与 html.theme-light
+   同优先级且排在后面，浅色块靠 .plat-x.theme-light 的更高优先级再覆盖回来。
+   品牌色：暖橙（贴合「黄果」）。
+   =================================================================== */
+html.plat-ios, html.plat-macos {
+  /* 文字层级（Apple label / secondaryLabel / tertiaryLabel 的实色近似） */
+  --p-on: #ffffff;
+  --p-mut: #a1a1a6;
+  --p-dim: #7c7c80;
+  --p-primary: #ff9f0a;
+  --p-on-primary: #1f1300;
+  --p-pc: #3d2a0d;
+  --p-on-pc: #ffd8a8;
+  --p-sec: #2c2c2e;
+  --p-on-sec: #ffffff;
+  --p-like: #ff375f;
+  --p-star: #ffd60a;
+  --p-success: #30d158;
+  --p-danger: #ff453a;
+  --p-on-danger: #ffffff;
+  --p-glow: rgba(255, 159, 10, .3);
+  --p-hover: rgba(255, 255, 255, .08);
+  --p-tint: rgba(255, 159, 10, .16);
+  --p-sep: rgba(84, 84, 88, .6);
+  --p-fill: rgba(118, 118, 128, .24);
+  --p-fill-2: rgba(118, 118, 128, .18);
+  --p-mat: rgba(30, 30, 30, .72);
+  --p-mat-thick: rgba(37, 37, 37, .9);
+  --p-mat-chrome: rgba(18, 18, 18, .78);
+  --p-shadow: 0 24px 64px rgba(0, 0, 0, .5), 0 4px 14px rgba(0, 0, 0, .3);
+}
+html.plat-ios {
+  /* systemBackground / secondarySystemBackground / systemGray6… */
+  --p-canvas: #000000;
+  --p-bg: #000000;
+  --p-s1: #1c1c1e;
+  --p-s2: #1c1c1e;
+  --p-s3: #2c2c2e;
+  --p-s4: #3a3a3c;
+}
+html.plat-macos {
+  /* windowBackground / controlBackground，下一阶段改为原生毛玻璃窗口 */
+  --p-canvas: #1c1c1e;
+  --p-bg: #1e1e1e;
+  --p-s1: #262628;
+  --p-s2: #2c2c2e;
+  --p-s3: #3a3a3c;
+  --p-s4: #48484a;
+}
+html.plat-ios.theme-light, html.plat-macos.theme-light {
+  --p-on: #000000;
+  --p-mut: #6c6c70;
+  --p-dim: #8e8e93;
+  --p-primary: #e67e00;
+  --p-on-primary: #ffffff;
+  --p-pc: #ffe8cc;
+  --p-on-pc: #6b3a00;
+  --p-sec: #e5e5ea;
+  --p-on-sec: #000000;
+  --p-like: #ff2d55;
+  --p-star: #b58800;
+  --p-success: #248a3d;
+  --p-danger: #d70015;
+  --p-on-danger: #ffffff;
+  --p-glow: rgba(230, 126, 0, .22);
+  --p-hover: rgba(0, 0, 0, .05);
+  --p-tint: rgba(230, 126, 0, .12);
+  --p-sep: rgba(60, 60, 67, .29);
+  --p-fill: rgba(120, 120, 128, .16);
+  --p-fill-2: rgba(120, 120, 128, .12);
+  --p-mat: rgba(249, 249, 249, .78);
+  --p-mat-thick: rgba(249, 249, 249, .92);
+  --p-mat-chrome: rgba(250, 250, 250, .82);
+  --p-shadow: 0 18px 48px rgba(0, 0, 0, .14), 0 2px 8px rgba(0, 0, 0, .06);
+}
+html.plat-ios.theme-light {
+  /* systemGroupedBackground + 白色分组卡片 */
+  --p-canvas: #f2f2f7;
+  --p-bg: #f2f2f7;
+  --p-s1: #ffffff;
+  --p-s2: #ffffff;
+  --p-s3: #e5e5ea;
+  --p-s4: #d1d1d6;
+}
+html.plat-macos.theme-light {
+  --p-canvas: #ececec;
+  --p-bg: #ffffff;
+  --p-s1: #ffffff;
+  --p-s2: #f5f5f7;
+  --p-s3: #e8e8ed;
+  --p-s4: #d8d8dd;
+}
+
+/* —— Apple 字号阶梯（iOS 动态字体默认档 / macOS 系统字号） —— */
+html.plat-ios {
+  --t-large: 34px; --t-title1: 28px; --t-title2: 22px; --t-title3: 20px;
+  --t-headline: 17px; --t-body: 17px; --t-callout: 16px; --t-subhead: 15px;
+  --t-footnote: 13px; --t-caption1: 12px; --t-caption2: 11px;
+}
+html.plat-macos {
+  --t-large: 26px; --t-title1: 22px; --t-title2: 17px; --t-title3: 15px;
+  --t-headline: 13px; --t-body: 13px; --t-callout: 12px; --t-subhead: 11px;
+  --t-footnote: 10px; --t-caption1: 10px; --t-caption2: 10px;
+}
+/* —— Apple 动效曲线 —— */
+html.plat-ios, html.plat-macos {
+  --ease-spring: cubic-bezier(.32, .72, 0, 1);     /* 页面推入 / 底部弹层 */
+  --ease-snappy: cubic-bezier(.2, .9, .3, 1.15);   /* 轻微回弹：点赞、弹窗 */
+  --ease-out-ios: cubic-bezier(.25, .1, .25, 1);
+  --dur-push: .42s; --dur-sheet: .44s;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 @theme inline {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Roboto", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
   --color-canvas: var(--p-canvas);
@@ -95,7 +212,50 @@ html.theme-light {
   --color-blue: var(--p-primary);
   --color-danger: var(--p-danger);
   --color-on-danger: var(--p-on-danger);
+  --color-sep: var(--p-sep, rgba(128, 128, 128, .22));
+  --color-fill: var(--p-fill, rgba(128, 128, 128, .2));
+  --color-fill2: var(--p-fill-2, rgba(128, 128, 128, .14));
 }
+
+/* ===================================================================
+   Apple 设计基础类（只在 iOS / macOS 生效或只在那里使用）
+   =================================================================== */
+/* 字号：t-* 读取上面的阶梯变量；变量缺失（Fluent 平台）时退回接近的固定值 */
+.t-large    { font-size: var(--t-large, 28px);    line-height: 1.2;  font-weight: 700; letter-spacing: .01em; }
+.t-title1   { font-size: var(--t-title1, 24px);   line-height: 1.2;  font-weight: 700; }
+.t-title2   { font-size: var(--t-title2, 20px);   line-height: 1.25; font-weight: 700; }
+.t-title3   { font-size: var(--t-title3, 17px);   line-height: 1.3;  font-weight: 600; }
+.t-headline { font-size: var(--t-headline, 15px); line-height: 1.35; font-weight: 600; }
+.t-body     { font-size: var(--t-body, 14px);     line-height: 1.4; }
+.t-callout  { font-size: var(--t-callout, 13px);  line-height: 1.4; }
+.t-subhead  { font-size: var(--t-subhead, 13px);  line-height: 1.38; }
+.t-footnote { font-size: var(--t-footnote, 12px); line-height: 1.35; }
+.t-caption1 { font-size: var(--t-caption1, 11px); line-height: 1.3; }
+.t-caption2 { font-size: var(--t-caption2, 10px); line-height: 1.3; }
+
+/* 毛玻璃材质：常规（导航栏 / 标签栏）、加厚（弹层 / 菜单）、深色铬（压在视频上） */
+.mat, .mat-thick, .mat-chrome {
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+}
+.mat       { background: var(--p-mat, var(--p-s1)); }
+.mat-thick { background: var(--p-mat-thick, var(--p-s2)); }
+.mat-chrome {
+  background: rgba(22, 22, 24, .62); color: #fff;
+  -webkit-backdrop-filter: saturate(160%) blur(30px);
+  backdrop-filter: saturate(160%) blur(30px);
+}
+/* 0.5px 分隔线（Retina 下为物理 1 像素） */
+.hairline-b { box-shadow: inset 0 -.5px 0 var(--p-sep, rgba(128,128,128,.22)); }
+.hairline-t { box-shadow: inset 0 .5px 0 var(--p-sep, rgba(128,128,128,.22)); }
+.hairline-ring { box-shadow: inset 0 0 0 .5px var(--p-sep, rgba(128,128,128,.22)); }
+
+/* Apple 平台：按压反馈更轻（缩放 0.97 + 透明度），节奏用弹簧曲线 */
+html.plat-ios .pressable, html.plat-macos .pressable {
+  transition: transform .28s var(--ease-spring), opacity .2s, background-color .2s, color .2s;
+}
+html.plat-ios .pressable:active { transform: scale(.97); opacity: .82; }
+html.plat-macos .pressable:active { transform: scale(.98); opacity: .85; }
 
 html, body, #root { height: 100%; overflow: hidden; overscroll-behavior: none; }
 body {
@@ -173,6 +333,13 @@ html.theme-light .elev-3 { box-shadow: 0 10px 30px rgba(0,0,0,.1); }
 @keyframes kf-kenburns { 0%{transform:scale(1.02) translateY(0)} 50%{transform:scale(1.12) translateY(-2%)} 100%{transform:scale(1.02) translateY(0)} }
 .a-kenburns { animation: kf-kenburns 18s ease-in-out infinite; }
 .spinner { border: 3px solid rgba(255,255,255,.18); border-top-color: var(--p-primary); border-radius: 999px; animation: kf-spin .8s linear infinite; }
+
+/* Apple 平台：推入 / 弹层 / 弹窗改用系统弹簧节奏 */
+html.plat-ios .a-page-in, html.plat-macos .win-page-in { animation-duration: var(--dur-push); animation-timing-function: var(--ease-spring); }
+html.plat-ios .a-sheet { animation-duration: var(--dur-sheet); animation-timing-function: var(--ease-spring); }
+html.plat-ios .a-scale-in, html.plat-macos .a-scale-in,
+html.plat-ios .a-toast, html.plat-macos .a-toast { animation-duration: .34s; animation-timing-function: var(--ease-snappy); }
+html.plat-macos .win-page-in { animation-name: kf-fade; animation-duration: .2s; }
 
 /* ——— 进度滑杆 ——— */
 input[type="range"].hg-range { -webkit-appearance: none; appearance: none; height: 28px; background: transparent; cursor: pointer; }
@@ -564,3 +731,7 @@ html.theme-light .article-body { color: rgba(20,24,30,.82); }
 .hg-tabbar button:focus-visible,
 .hg-player-ui button:focus,
 .hg-player-ui button:focus-visible { outline: none; }
+
+/* Apple 平台：视频浮层里原本写死的蓝色强调改为品牌橙（浮层固定压暗底，用深色模式的橙） */
+html.plat-ios .desktop-seek-played, html.plat-macos .desktop-seek-played { background: #ff9f0a; }
+html.plat-ios .hg-link, html.plat-macos .hg-link { color: #ffb340; }
