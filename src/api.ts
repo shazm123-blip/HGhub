@@ -100,8 +100,8 @@ export const api = {
   me: () => call<User>("api_me"),
 
   feed: (page = 1, size = 20) => call<Paged<VideoCard>>("api_feed", { page, size }),
-  category: (cate: string, page = 1, size = 20) =>
-    call<Paged<VideoCard>>("api_category", { cate, page, size }),
+  category: (cate: string, page = 1, size = 20, sort?: "new" | "hot") =>
+    call<Paged<VideoCard>>("api_category", sort ? { cate, page, size, sort } : { cate, page, size }),
   rank: (kind: "hot" | "recommend" | "potential") =>
     call<{ type: string; items: RankItem[] }>("api_rank", { kind }),
   search: (q: string, page = 1, size = 20) =>
@@ -120,6 +120,7 @@ export const api = {
     call<unknown>("api_comment_send", { id, ep, text, replyId: replyId ?? null }),
 
   clearCache: () => invoke<void>("cache_clear"),
+  cacheStats: () => invoke<{ entries: number; bytes: number }>("cache_stats"),
   netDiag: () => invoke<Record<string, unknown>>("net_diag"),
   postLike: (id: number, on: boolean) => call<unknown>("api_post_like", { id, on }),
   postCollect: (id: number, on: boolean) => call<unknown>("api_post_collect", { id, on }),
@@ -163,6 +164,49 @@ export type LineProbe = { url: string; ok: boolean; status?: number; ms: number;
 export const hostOf = (url: string) => {
   try { return new URL(url).host; } catch { return url.replace(/^https?:\/\//, "").replace(/\/.*$/, ""); }
 };
+
+/** 判断是否属于可登录账号的固定主线 */
+export const isFixedLine = (url: string) =>
+  /^https:\/\/(huangguoai\.com|huangguoai\.ai)(\/|$)/i.test(url.trim());
+
+/** 字节格式化 */
+export const fmtBytes = (bytes: number): string => {
+  const n = Math.max(0, Number(bytes) || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1).replace(/\.0$/, "")} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/** 把底层网络/播放器错误代码翻译为更易懂的中文说明 */
+export function friendlyError(raw: string): { summary: string; detail?: string } {
+  const s = (raw || "").trim();
+  if (!s) return { summary: "加载失败，请稍后重试或切换线路" };
+  const lower = s.toLowerCase();
+  if (s.includes("登录已过期")) return { summary: "登录态已失效，请重新登录" };
+  if (s.includes("已下线") || /\b410\b/.test(s)) return { summary: "该内容或频道已下线", detail: s };
+  if (/\b404\b/.test(s)) return { summary: "内容不存在或线路接口异常", detail: s };
+  if (/\b403\b/.test(s)) return { summary: "资源访问被拒绝或签名已过期，请尝试重新加载", detail: s };
+  if (/5\d\d/.test(s)) return { summary: "服务器暂时开小差了，请稍后重试或切换线路", detail: s };
+  if (lower.includes("fragloadtimeout") || lower.includes("manifestloadtimeout") || lower.includes("timed out") || s.includes("超时")) {
+    return { summary: "视频加载超时，可能是当前线路较慢或网络不稳定", detail: s };
+  }
+  if (lower.includes("manifestloaderror") || lower.includes("fragloaderror") || lower.includes("networkerror")) {
+    return { summary: "网络连接中断或分片加载失败，可尝试切换线路", detail: s };
+  }
+  if (lower.includes("mediaerror")) {
+    return { summary: "视频解码异常，请点击重新加载重试", detail: s };
+  }
+  if (lower.includes("dns") || lower.includes("enotfound") || lower.includes("nodename")) {
+    return { summary: "域名解析失败，建议切换其他线路或检查网络代理", detail: s };
+  }
+  if (lower.includes("tunnel") || lower.includes("proxy")) {
+    return { summary: "系统代理连接失败，请检查代理工具或尝试直连镜像线路", detail: s };
+  }
+  if (lower.includes("refused")) {
+    return { summary: "连接被服务器拒绝，请尝试切换线路", detail: s };
+  }
+  return { summary: s };
+}
 
 /* ── 自检：验证 webview → 本地协议 → 上游 的取流链路 ───────── */
 export async function selfTest(): Promise<string> {

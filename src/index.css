@@ -267,7 +267,7 @@ body {
   -webkit-tap-highlight-color: transparent;
   user-select: none;
 }
-input, textarea { user-select: text; }
+input, textarea, .select-text, .article-body { user-select: text; -webkit-user-select: text; }
 img, video { -webkit-user-drag: none; }
 button { cursor: pointer; font-family: inherit; touch-action: manipulation; }
 
@@ -533,6 +533,7 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
 .player-root.is-locked .desktop-social { visibility: hidden; }
 .desktop-control-row { display: flex; align-items: center; gap: 5px; height: 38px; }
 .player-control {
+  position: relative;
   height: 32px; min-width: 32px; padding: 0 8px; border-radius: 7px;
   display: inline-flex; align-items: center; justify-content: center;
   color: #c8ced8; transition: background .16s, color .16s, transform .16s;
@@ -543,13 +544,44 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
 .player-control.is-on { color: var(--p-primary); }
 .player-control.primary-play { color: #fff; }
 .player-control.primary-play svg { fill: currentColor; }
+@media (hover: hover) {
+  [data-tooltip] { position: relative; }
+  [data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute; bottom: calc(100% + 8px); left: 50%;
+    transform: translate(-50%, 4px);
+    padding: 4px 8px; border-radius: 6px;
+    background: rgba(18, 20, 24, .92); color: #f4f6f9;
+    font-size: 11px; font-weight: 500; line-height: 1.2; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+    pointer-events: none; opacity: 0; z-index: 60;
+    transition: opacity .14s ease, transform .14s ease;
+  }
+  .player-control-row > .player-control:first-child[data-tooltip]::after {
+    left: 0; transform: translate(0, 4px);
+  }
+  .player-control-row > .player-control:last-child[data-tooltip]::after {
+    left: auto; right: 0; transform: translate(0, 4px);
+  }
+  [data-tooltip]:hover::after, [data-tooltip]:focus-visible::after {
+    opacity: 1; transform: translate(-50%, 0);
+  }
+  .player-control-row > .player-control:first-child[data-tooltip]:hover::after,
+  .player-control-row > .player-control:first-child[data-tooltip]:focus-visible::after,
+  .player-control-row > .player-control:last-child[data-tooltip]:hover::after,
+  .player-control-row > .player-control:last-child[data-tooltip]:focus-visible::after {
+    transform: translate(0, 0);
+  }
+  [data-tooltip]:disabled::after,
+  .player-speed-slot:has(.player-speed-menu) [data-tooltip]::after { opacity: 0 !important; }
+}
 .player-timecode {
   display: inline-flex; gap: 4px; align-items: baseline;
   font-size: 11.5px; font-variant-numeric: tabular-nums; color: #d3dae4; margin-left: 6px;
 }
 .player-time-separator { color: #6b7480; }
 .player-control-spacer { flex: 1; }
-.player-resolution { font-size: 10.5px; color: #8b93a0; padding: 0 6px; }
+.player-resolution { font-size: 10.5px; color: #a7b0bd; padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .player-speed-slot { position: relative; }
 .player-speed { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .player-speed-menu {
@@ -692,7 +724,7 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
 /* —— 吃瓜图文正文 —— */
 .article-body { font-size: 13px; line-height: 1.85; color: rgba(240,242,246,.84); word-break: break-word; }
 .article-body p { margin: 9px 0; }
-.article-body img { display: block; width: 100%; border-radius: 10px; margin: 10px 0; }
+.article-body img { display: block; width: auto; max-width: 100%; max-height: 72dvh; object-fit: contain; border-radius: 10px; margin: 10px auto; cursor: zoom-in; }
 .article-body a { color: var(--p-primary); text-decoration: underline; }
 .article-body h1, .article-body h2, .article-body h3 { font-size: 14.5px; font-weight: 700; margin: 14px 0 6px; color: var(--p-on); }
 .article-body ul, .article-body ol { padding-left: 18px; margin: 8px 0; }
@@ -833,8 +865,8 @@ html.plat-macos .win-page-in { animation: apple-page .25s var(--ease-spring) bot
 :is(html.plat-ios, html.plat-macos) .a-pop { display: inline-flex; animation: apple-like .4s ease-out; }
 :is(html.plat-ios, html.plat-macos) .shimmer { background-image: linear-gradient(105deg, var(--p-s2) 32%, var(--p-s4) 50%, var(--p-s2) 68%); }
 @media (prefers-reduced-motion: reduce) {
-  :is(html.plat-ios, html.plat-macos) :is(.a-pop,.a-page-in,.a-page-out,.win-page-in,.a-sheet,.a-sheet-out,.a-scale-in,.a-rise,.a-toast,.shimmer) { animation-duration: .01ms; animation-iteration-count: 1; }
-  :is(html.plat-ios, html.plat-macos) .pressable { transition: none; }
+  .a-pop,.a-page-in,.a-page-out,.win-page-in,.a-sheet,.a-sheet-out,.a-scale-in,.a-rise,.a-toast,.shimmer { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+  .pressable { transition: none !important; }
 }
 
 /* 扩大视频圆钮的触摸区域；底部播放键向下扩展，避开上方的进度条。 */

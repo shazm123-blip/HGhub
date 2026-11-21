@@ -4,7 +4,7 @@ import { isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
 import { hasBackHandler, isPlaybackLocked, runBack } from "./back";
 import IosBackEdge from "./components/IosBackEdge";
-import { IHome, IHomeF, ISearch, IGrid, IGridF, IUser, IUserF } from "./icons";
+import { IClose, IGrid, IGridF, IHome, IHomeF, IKeyboard, ISearch, IUser, IUserF } from "./icons";
 import Home from "./pages/Home";
 import Search, { RankPage } from "./pages/Search";
 import Category, { ChannelPage } from "./pages/Category";
@@ -13,7 +13,8 @@ import SettingsPage from "./pages/Settings";
 import Feed from "./components/Feed";
 import { PostsPage, PostDetail } from "./pages/Posts";
 import LoginModal from "./components/LoginModal";
-import { ToastHost } from "./components/ui";
+import LinePicker from "./components/LinePicker";
+import { Modal, ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar, MacToolbar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
@@ -31,13 +32,11 @@ function TabBar() {
     { k: "category", label: "分类" },
     { k: "profile", label: "我的" },
   ];
-  /* 细瘦纯文字分栏：只有选中项高亮，没有指示点。
-     首页是沉浸视频 → 底栏压深色；搜索/分类/我的 是浅色内容页 →
-     浅色主题下底栏跟着换成浅色，深色主题保持深色。 */
+  const icons = { home: [IHome, IHomeF], search: [ISearch, ISearch], category: [IGrid, IGridF], profile: [IUser, IUserF] };
+  /* 首页是沉浸视频 → 底栏压深色；搜索/分类/我的 是常规内容页 → 跟随主题外观。 */
   const overVideo = tab === "home";
   const lightBar = !overVideo && theme === "light";
   if (platform === "ios") {
-    const icons = { home: [IHome, IHomeF], search: [ISearch, ISearch], category: [IGrid, IGridF], profile: [IUser, IUserF] };
     return <nav aria-label="主导航" className={`hg-tabbar ios-tabbar ${overVideo ? "mat-chrome" : "mat"}`}>
       {items.map(({ k, label }) => {
         const selected = k === tab;
@@ -49,25 +48,27 @@ function TabBar() {
     </nav>;
   }
   return (
-    <nav className="hg-tabbar absolute bottom-0 inset-x-0 z-30"
+    <nav aria-label="主导航" className="hg-tabbar absolute bottom-0 inset-x-0 z-30"
       style={{
         paddingBottom: "var(--sab, 0px)",
-        background: lightBar ? "rgba(250, 250, 250, .97)" : overVideo ? "#000000" : "#141414",
-        borderTop: lightBar ? "1px solid rgba(0,0,0,.08)" : overVideo ? "none" : "1px solid rgba(255,255,255,.07)",
+        background: lightBar ? "rgba(250, 250, 250, .97)" : overVideo ? "rgba(8, 8, 10, .94)" : "#141414",
+        borderTop: lightBar ? "1px solid rgba(0,0,0,.08)" : overVideo ? "1px solid rgba(255,255,255,.06)" : "1px solid rgba(255,255,255,.07)",
         boxShadow: lightBar ? "0 -2px 14px rgba(0,0,0,.05)" : "none",
       }}>
-      <div className="h-[40px] flex items-center px-1">
+      <div className="h-[50px] flex items-center px-1">
         {items.map(({ k, label }) => {
           const on = tab === k;
+          const Icon = icons[k][on ? 1 : 0];
+          const color = lightBar
+            ? (on ? "var(--p-primary)" : "rgba(0,0,0,.5)")
+            : (on ? "#ffffff" : "rgba(255,255,255,.6)");
           return (
-            <button key={k} onClick={() => pickTab(k)} className="flex-1 h-full flex items-center justify-center pressable">
-              <span className="text-[12.5px] leading-none transition-colors duration-200"
-                style={{
-                  fontWeight: on ? 700 : 400,
-                  color: lightBar
-                    ? (on ? "var(--p-primary)" : "rgba(0,0,0,.45)")
-                    : (on ? "#ffffff" : "rgba(255,255,255,.6)"),
-                }}>
+            <button key={k} aria-current={on ? "page" : undefined} onClick={() => pickTab(k)}
+              className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 pressable"
+              style={{ color }}>
+              <Icon size={20} strokeWidth={on ? 2.1 : 1.75} />
+              <span className="text-[10.5px] leading-none transition-colors duration-200"
+                style={{ fontWeight: on ? 700 : 500 }}>
                 {label}
               </span>
             </button>
@@ -99,7 +100,7 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
 
 /* ============ 统一主视口（桌面 / 移动共用） ============ */
 function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
-  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs } = useStore();
+  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, linePickerOpen, shortcutsOpen, setShortcutsOpen, fs } = useStore();
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
 
@@ -117,17 +118,19 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
     const fn = (e: KeyboardEvent) => {
       if (isPlaybackLocked()) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
         if (e.key === "Escape") t.blur();
         return;
       }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Escape") {
         if (runBack()) return;
         if (loginOpen) { setLoginOpen(false); return; }
         if (stack.length) pop();
         return;
       }
-      if (loginOpen || hasBackHandler()) return;
+      if (loginOpen || linePickerOpen || shortcutsOpen || hasBackHandler()) return;
+      if (e.key === "?" && !isMobile) { e.preventDefault(); setShortcutsOpen(true); return; }
       if (e.key === "/") { e.preventDefault(); setTab("search"); return; }
       if (["1", "2", "3", "4"].includes(e.key) && !e.repeat) {
         setTab((["home", "search", "category", "profile"] as Tab[])[Number(e.key) - 1]);
@@ -135,11 +138,12 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [stack.length, pop, setTab, loginOpen, setLoginOpen]);
+  }, [stack.length, pop, setTab, loginOpen, setLoginOpen, linePickerOpen, shortcutsOpen, setShortcutsOpen]);
 
   const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
-  const pageActive = stack.length === 0 && !loginOpen;
-  const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 49 : 40) : 14;
+  const modalBlocking = loginOpen || linePickerOpen || shortcutsOpen;
+  const pageActive = stack.length === 0 && !modalBlocking;
+  const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 49 : 50) : 14;
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
@@ -154,8 +158,8 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 
         {stack.map((p, i) => (
           <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
-            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !loginOpen} bottomInset={stackInset} />
-            {platform === "ios" && i === stack.length - 1 && !loginOpen && !fs && <IosBackEdge onBack={pop} />}
+            <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !modalBlocking} bottomInset={stackInset} />
+            {platform === "ios" && i === stack.length - 1 && !modalBlocking && !fs && <IosBackEdge onBack={pop} />}
           </div>
         ))}
 
@@ -203,25 +207,76 @@ function MobileShell() {
   );
 }
 
+/* ============ 快捷键速查弹窗 ============ */
+function ShortcutsModal() {
+  const { shortcutsOpen, setShortcutsOpen, platform } = useStore();
+  const rows: [string, string][] = [
+    ["Space", "播放 / 暂停"],
+    ["↑ / ↓", "上一个 / 下一个视频"],
+    ["← / →", "快退 / 快进 5 秒"],
+    ["N / P", "下一集 / 上一集"],
+    ["F / Esc", "进入 / 退出全屏"],
+    ["T", "影院模式"],
+    ["M", "静音切换"],
+    ["L / S", "喜欢 / 收藏"],
+    ["C / E", "评论面板 / 选集面板"],
+    ["1 ~ 4 / /", "切换导航标签 / 搜索"],
+    ...(platform === "macos" ? [["⌘[ / ⌘]", "后退 / 前进"] as [string, string], ["⌘F / ⌘,", "搜索 / 设置"] as [string, string]] : []),
+    ["?", "显示本快捷键说明"],
+  ];
+  return (
+    <Modal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} width={380}>
+      <div className="p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="shrink-0 w-8 h-8 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><IKeyboard size={17} /></span>
+          <span className="text-[15px] font-bold text-on">键盘快捷键</span>
+          <button onClick={() => setShortcutsOpen(false)} aria-label="关闭"
+            className="ml-auto w-7 h-7 rounded-full bg-s4 flex items-center justify-center text-mut pressable">
+            <IClose size={13} />
+          </button>
+        </div>
+        <div className="divide-y divide-s4/60">
+          {rows.map(([k, desc]) => (
+            <div key={k} className="flex items-center justify-between py-2 text-[12px]">
+              <span className="text-on/85">{desc}</span>
+              <kbd className="px-2 py-0.5 rounded bg-s4 text-[11px] font-semibold text-primary tabular-nums">{k}</kbd>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /* ============ 入口 ============ */
 export default function App() {
-  const { platform, loginOpen, setLoginOpen, tab, setTab, stack, pop, fs, setFs } = useStore();
+  const { platform, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, tab, setTab, stack, pop, fs, setFs, toast } = useStore();
+  const lastBackExitRef = useRef(0);
   useEffect(() => {
     tracePlayback("navigation.change", { tab, stack: stack.map(p => ({ page: p.kind, key: p.key })), login_open: loginOpen });
   }, [tab, stack, loginOpen]);
 
   /* —— 安卓硬件返回键 ——
-     层级：全屏 → 面板/弹层 → 登录框 → 页面栈 → 回首页 → 退出应用。
+     层级：播放锁拦截 → 全屏 → 面板/弹层 → 线路/登录框 → 页面栈 → 回首页 → 双击退出应用。
      不注册这个监听，Tauri 会直接 webView.goBack() 或退出，表现就是「任意页面返回都回桌面」。 */
   const backRef = useRef<() => void>(() => {});
   backRef.current = () => {
+    if (isPlaybackLocked()) { toast("屏幕已锁定，请点击右侧锁图标解锁", "info"); return; }
     if (fs) { setFs(false); return; }                        // 沉浸全屏
     if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
     if (runBack()) return;                                  // 播放器的选集/评论/图文面板
+    if (shortcutsOpen) { setShortcutsOpen(false); return; }
+    if (linePickerOpen) { setLinePickerOpen(false); return; }
     if (loginOpen) { setLoginOpen(false); return; }
     if (stack.length) { pop(); return; }
     if (tab !== "home") { setTab("home"); return; }
-    invoke("plugin:app|exit", { code: 0 }).catch(() => {});
+    const now = Date.now();
+    if (now - lastBackExitRef.current < 2000) {
+      invoke("plugin:app|exit", { code: 0 }).catch(() => {});
+    } else {
+      lastBackExitRef.current = now;
+      toast("再按一次退出应用", "info");
+    }
   };
 
   useEffect(() => {
@@ -238,7 +293,13 @@ export default function App() {
   }, [platform]);
 
   useEffect(() => {
-    const prevent = (e: Event) => e.preventDefault();
+    const prevent = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true'], .article-body, .select-text")) return;
+      const sel = window.getSelection()?.toString();
+      if (sel && sel.trim().length > 0) return;
+      e.preventDefault();
+    };
     document.addEventListener("contextmenu", prevent);
     return () => document.removeEventListener("contextmenu", prevent);
   }, []);
@@ -255,6 +316,8 @@ export default function App() {
     <div className={`fixed inset-0 plat-${platform}`}>
       {isMobile ? <MobileShell /> : <DesktopShell />}
       <LoginModal />
+      <LinePicker open={linePickerOpen} onClose={() => setLinePickerOpen(false)} />
+      <ShortcutsModal />
       <ToastHost />
     </div>
   );

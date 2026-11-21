@@ -11,11 +11,14 @@ type Props = {
   rate: number;
   muted: boolean;
   volume: number;
+  orientationLabel?: string;
   theater?: boolean;
   fullscreen?: boolean;
   visible?: boolean;
   seekEnabled?: boolean;
   seekKey?: string;
+  prevDisabled?: boolean;
+  prevTitle?: string;
   nextDisabled?: boolean;
   nextTitle?: string;
   onToggle: () => void;
@@ -28,14 +31,16 @@ type Props = {
   onLock: () => void;
   onTheater?: () => void;
   onFullscreen: () => void;
+  onPrev?: () => void;
   onNext?: () => void;
 };
 
 const clock = (s: number) => fmtTime(Math.max(0, s || 0)).padStart(5, "0");
 
 export default function PlayerControls({
-  paused, time, duration, buffered = 0, rate, muted, volume, theater = false, fullscreen = false,
-  visible = true, seekEnabled = true, seekKey, nextDisabled = false, nextTitle = "下一个", onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onNext,
+  paused, time, duration, buffered = 0, rate, muted, volume, orientationLabel, theater = false, fullscreen = false,
+  visible = true, seekEnabled = true, seekKey, prevDisabled = false, prevTitle = "上一个", nextDisabled = false, nextTitle = "下一个",
+  onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onPrev, onNext,
 }: Props) {
   const [speedOpen, setSpeedOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -65,6 +70,11 @@ export default function PlayerControls({
         <button className="player-control primary-play" aria-label={paused ? "播放" : "暂停"} data-tooltip={paused ? "播放 Space" : "暂停 Space"} onClick={onToggle}>
           {paused ? <IPlayF size={19} /> : <IPauseF size={18} />}
         </button>
+        {onPrev && (
+          <button className="player-control" aria-label={prevTitle} data-tooltip={prevTitle} disabled={prevDisabled} onClick={onPrev}>
+            <INext size={18} strokeWidth={1.7} className="rotate-180" />
+          </button>
+        )}
         {onNext && (
           <button className="player-control" aria-label={nextTitle} data-tooltip={nextTitle} disabled={nextDisabled} onClick={onNext}>
             <INext size={18} strokeWidth={1.7} />
@@ -72,6 +82,7 @@ export default function PlayerControls({
         )}
         <span className="player-timecode"><span>{clock(seek.time)}</span><span className="player-time-separator">/</span>{clock(duration)}</span>
         <div className="player-control-spacer" />
+        {!!orientationLabel && <span className="player-resolution">{orientationLabel}</span>}
         <div className="player-speed-slot">
           <button className={`player-control player-speed ${rate !== 1 ? "is-on" : ""}`} aria-label="倍速" aria-expanded={speedOpen}
             data-tooltip="播放速度" onClick={() => setSpeedOpen((v) => !v)}>

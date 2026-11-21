@@ -488,11 +488,18 @@ fn validate_category_slug(cate: &str) -> Result<&str, String> {
     Ok(trimmed)
 }
 
-fn category_api_path(cate: &str, page: u32, size: u32) -> String {
+fn normalize_category_sort(sort: Option<&str>) -> &'static str {
+    match sort.map(str::trim) {
+        Some("hot") => "hot",
+        _ => "new",
+    }
+}
+
+fn category_api_path(cate: &str, sort: &str, page: u32, size: u32) -> String {
     if cate == "original" {
-        format!("/api/videos?is_original=1&sort=new&page={page}&size={size}")
+        format!("/api/videos?is_original=1&sort={sort}&page={page}&size={size}")
     } else {
-        format!("/api/videos/category/{cate}?sort=new&page={page}&size={size}")
+        format!("/api/videos/category/{cate}?sort={sort}&page={page}&size={size}")
     }
 }
 
@@ -502,9 +509,11 @@ pub async fn api_category(
     cate: String,
     page: u32,
     size: u32,
+    sort: Option<String>,
 ) -> Result<Value, String> {
     let cate = validate_category_slug(&cate)?;
-    let path = category_api_path(cate, page, size);
+    let sort = normalize_category_sort(sort.as_deref());
+    let path = category_api_path(cate, sort, page, size);
     state.get(&path).await
 }
 
@@ -674,6 +683,12 @@ pub async fn cache_clear() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn cache_stats() -> Result<Value, String> {
+    let (entries, bytes) = crate::media::cache_stats();
+    Ok(json!({ "entries": entries, "bytes": bytes }))
+}
+
 /* ───────────────────────── 吃瓜帖子互动 ───────────────────────── */
 
 #[tauri::command]
@@ -706,7 +721,8 @@ pub async fn api_post_comments(
 #[cfg(test)]
 mod tests {
     use super::{
-        category_api_path, has_play_url, is_newer, normalize_play_info, validate_category_slug,
+        category_api_path, has_play_url, is_newer, normalize_category_sort, normalize_play_info,
+        validate_category_slug,
     };
     use serde_json::{json, Value};
 
@@ -798,13 +814,25 @@ mod tests {
 
     #[test]
     fn category_api_path_routes_original_and_standard_slugs() {
+        assert_eq!(normalize_category_sort(None), "new");
+        assert_eq!(normalize_category_sort(Some("hot")), "hot");
+        assert_eq!(normalize_category_sort(Some("score")), "new");
+        assert_eq!(normalize_category_sort(Some("hot&bad=1")), "new");
         assert_eq!(
-            category_api_path("original", 2, 20),
+            category_api_path("original", "new", 2, 20),
             "/api/videos?is_original=1&sort=new&page=2&size=20"
         );
         assert_eq!(
-            category_api_path("ai-duanju", 2, 20),
+            category_api_path("original", "hot", 1, 20),
+            "/api/videos?is_original=1&sort=hot&page=1&size=20"
+        );
+        assert_eq!(
+            category_api_path("ai-duanju", "new", 2, 20),
             "/api/videos/category/ai-duanju?sort=new&page=2&size=20"
+        );
+        assert_eq!(
+            category_api_path("ai-duanju", "hot", 2, 20),
+            "/api/videos/category/ai-duanju?sort=hot&page=2&size=20"
         );
     }
 }

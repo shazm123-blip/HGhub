@@ -90,16 +90,24 @@ export function Toggle({ on, onChange, label, disabled = false }: { on: boolean;
 }
 
 /* ——— 空状态 ——— */
-export function Empty({ icon, title, sub, action, onAction }: {
+export function Empty({ icon, title, sub, action, onAction, secondaryAction, onSecondaryAction }: {
   icon: React.ReactNode; title: string; sub?: string; action?: string; onAction?: () => void;
+  secondaryAction?: string; onSecondaryAction?: () => void;
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 px-8 text-center a-rise">
       <div className="w-16 h-16 rounded-(--r-md) tonal flex items-center justify-center mb-4">{icon}</div>
       <div className="text-[15px] font-semibold text-on/90">{title}</div>
-      {sub && <div className="text-xs text-mut mt-1.5 leading-relaxed">{sub}</div>}
-      {action && (
-        <button onClick={onAction} className="mt-5 px-6 h-10 rounded-(--r-ctl) bg-primary text-on-primary text-[13px] font-bold pressable">{action}</button>
+      {sub && <div className="text-xs text-mut mt-1.5 leading-relaxed select-text">{sub}</div>}
+      {(action || secondaryAction) && (
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+          {action && (
+            <button onClick={onAction} className="px-6 h-10 rounded-(--r-ctl) bg-primary text-on-primary text-[13px] font-bold pressable">{action}</button>
+          )}
+          {secondaryAction && (
+            <button onClick={onSecondaryAction} className="px-5 h-10 rounded-(--r-ctl) bg-s3 text-on text-[13px] font-semibold pressable">{secondaryAction}</button>
+          )}
+        </div>
       )}
     </div>
   );

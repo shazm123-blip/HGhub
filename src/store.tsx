@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { invoke } from "@tauri-apps/api/core";
 import { api, platform as envPlatform, setApiBase } from "./api";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./html";
-import type { User } from "./types";
+import type { FollowAuthor, User, VideoOrientationMeta, VideoSnapshot } from "./types";
 
 export type Platform = "android" | "ios" | "windows" | "macos" | "linux";
 export type Theme = "dark" | "light";
@@ -46,11 +46,18 @@ export type Toast = { id: number; msg: string; icon?: "ok" | "heart" | "star" | 
 /** 观看记录：看到第几集、第几秒（`dur` 用来判断是否已看完） */
 export type WatchProgress = { id: number; ep: number; t: number; dur: number; at: number };
 
+const MAX_SNAPSHOTS = 120;
+const MAX_ORIENTATIONS = 300;
+
 type Persist = {
   likes: number[];
   favs: number[];
   history: WatchProgress[];
   follows: number[];
+  followAuthors: Record<number, FollowAuthor>;
+  videoSnapshots: Record<number, VideoSnapshot>;
+  videoOrientations: Record<number, VideoOrientationMeta>;
+  landscapeFitPref: "contain" | "cover";
   muted: boolean;
   muteOnStartup: boolean;
   volume: number;
@@ -60,6 +67,10 @@ type Persist = {
 const LS = "hghub_app_v1";
 const DEFAULTS: Persist = {
   likes: [], favs: [], history: [], follows: [],
+  followAuthors: {},
+  videoSnapshots: {},
+  videoOrientations: {},
+  landscapeFitPref: "contain",
   muted: true, muteOnStartup: true, volume: 0.7, searchHist: [],
 };
 
@@ -87,7 +98,16 @@ function loadPersist(): Persist {
     const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Persist>) };
     // 只在启动时应用；本次使用中取消静音不会关闭此偏好。
     const muteOnStartup = p.muteOnStartup !== false;
-    return { ...p, muteOnStartup, muted: muteOnStartup || p.muted === true, history: normalizeHistory(p.history) };
+    return {
+      ...p,
+      followAuthors: p.followAuthors && typeof p.followAuthors === "object" ? p.followAuthors : {},
+      videoSnapshots: p.videoSnapshots && typeof p.videoSnapshots === "object" ? p.videoSnapshots : {},
+      videoOrientations: p.videoOrientations && typeof p.videoOrientations === "object" ? p.videoOrientations : {},
+      landscapeFitPref: p.landscapeFitPref === "cover" ? "cover" : "contain",
+      muteOnStartup,
+      muted: muteOnStartup || p.muted === true,
+      history: normalizeHistory(p.history),
+    };
   } catch {
     return DEFAULTS;
   }
@@ -128,22 +148,35 @@ type Store = {
   canGoBack: boolean; canGoForward: boolean; travel: (offset: -1 | 1) => void;
   stack: Page[]; push: (p: PageInput) => void; pop: () => void;
   user: User | null; setUser: (u: User | null) => void;
+  mergeUserInteractions: (u: User | null) => void;
   loginOpen: boolean; setLoginOpen: (b: boolean) => void;
+  linePickerOpen: boolean; setLinePickerOpen: (b: boolean) => void;
+  shortcutsOpen: boolean; setShortcutsOpen: (b: boolean) => void;
   logout: () => Promise<void>;
   likes: number[]; favs: number[]; history: WatchProgress[]; follows: number[];
+  followAuthors: Record<number, FollowAuthor>;
+  videoSnapshots: Record<number, VideoSnapshot>;
+  upsertVideoSnapshot: (snap: Omit<VideoSnapshot, "updatedAt">) => void;
+  recordVideoOrientation: (id: number, w: number, h: number) => void;
+  getVideoOrientation: (id: number) => VideoOrientationMeta | undefined;
+  landscapeFitPref: "contain" | "cover";
+  setLandscapeFitPref: (fit: "contain" | "cover") => void;
   isLiked: (id: number) => boolean; isFav: (id: number) => boolean;
   toggleLikeLocal: (id: number) => boolean;
   toggleFavLocal: (id: number) => boolean;
+  removeFav: (id: number) => void;
+  removeLike: (id: number) => void;
+  removeHistory: (id: number) => void;
   /** 记一条观看记录；`ep/t/dur` 省略时保留原进度，`ep` 变了就把进度归零 */
   addHistory: (id: number, ep?: number, t?: number, dur?: number) => void;
   clearHistory: () => void;
-  toggleFollowLocal: (uid: number) => boolean;
+  toggleFollowLocal: (uid: number, author?: { name: string; avatar?: string }) => boolean;
   theater: boolean; setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
   fs: boolean; setFs: (v: boolean | ((p: boolean) => boolean)) => void;
   muted: boolean; setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
   muteOnStartup: boolean; setMuteOnStartup: (on: boolean) => void;
   volume: number; setVolume: (v: number) => void;
-  searchHist: string[]; addSearch: (q: string) => void; clearSearchHist: () => void;
+  searchHist: string[]; addSearch: (q: string) => void; removeSearchHist: (q: string) => void; clearSearchHist: () => void;
   strictSecurity: boolean; strictSecurityReady: boolean; securityPending: boolean; cliRelaxed: boolean; setStrictSecurity: (on: boolean) => Promise<void>;
   lineVersion: number; bumpLineVersion: () => void;
   homeRefresh: number; bumpHomeRefresh: () => void;
@@ -169,6 +202,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const { tab, stack } = navigation.entries[navigation.index];
   const [user, setUser] = useState<User | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [linePickerOpen, setLinePickerOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [theater, setTheaterState] = useState(false);
   const [fs, setFsState] = useState(false);
@@ -201,11 +236,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem(LS, JSON.stringify(p)); } catch { /* ignore */ }
   }, [p]);
 
+  const mergeUserInteractions = useCallback((u: User | null) => {
+    const inter = u?.interactions;
+    if (!inter) return;
+    const srvLikes = Array.isArray(inter.like_video_ids) ? inter.like_video_ids.filter((x) => typeof x === "number") : [];
+    const srvFavs = Array.isArray(inter.favorite_video_ids) ? inter.favorite_video_ids.filter((x) => typeof x === "number") : [];
+    const srvFollows = Array.isArray(inter.follow_user_ids) ? inter.follow_user_ids.filter((x) => typeof x === "number") : [];
+    if (!srvLikes.length && !srvFavs.length && !srvFollows.length) return;
+    setP((s) => {
+      const mergeIds = (local: number[], incoming: number[]) => {
+        if (!incoming.length) return local;
+        const seen = new Set(local);
+        const added = incoming.filter((id) => !seen.has(id));
+        return added.length ? [...local, ...added] : local;
+      };
+      const likes = mergeIds(s.likes, srvLikes);
+      const favs = mergeIds(s.favs, srvFavs);
+      const follows = mergeIds(s.follows, srvFollows);
+      if (likes === s.likes && favs === s.favs && follows === s.follows) return s;
+      const next = { ...s, likes, favs, follows };
+      pRef.current = next;
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     api.boot()
       .then((r) => {
         if (r.base) setApiBase(r.base);
-        if (r.user && (r.user as User).id) setUser(r.user as User);
+        if (r.user && (r.user as User).id) {
+          const u = r.user as User;
+          setUser(u);
+          mergeUserInteractions(u);
+        }
         if (typeof r.strict_security === "boolean") {
           setStrictSecurityState(r.strict_security);
           setHtmlStrictSecurity(r.strict_security);
@@ -214,7 +277,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCliRelaxed(!!r.cli_relaxed);
       })
       .catch(() => { /* 离线也能用 */ });
-  }, []);
+  }, [mergeUserInteractions]);
 
   const setStrictSecurity = useCallback(async (on: boolean) => {
     if (!strictSecurityReady) throw new Error("安全设置尚未读取，请重新启动应用");
@@ -245,17 +308,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const syncTheaterForDest = useCallback((dest: Destination) => {
+    const top = dest.stack[dest.stack.length - 1];
+    const isPlayer = top ? top.kind === "feed" : dest.tab === "home";
+    if (!isPlayer) setTheaterState(false);
+  }, []);
+
   const navigate = useCallback((update: (current: Destination) => Destination) => {
     setFs(false);
     setNavigation(previous => {
       const current = previous.entries[previous.index];
       const next = update(current);
       if (current === next) return previous;
+      syncTheaterForDest(next);
       if (envPlatform !== "macos") return { entries: [next], index: 0 };
       const entries = [...previous.entries.slice(Math.max(0, previous.index - 48), previous.index + 1), next];
       return { entries, index: entries.length - 1 };
     });
-  }, [setFs]);
+  }, [setFs, syncTheaterForDest]);
   const setTab = useCallback((tab: Tab) => navigate(current =>
     current.tab === tab && !current.stack.length ? current : { tab, stack: [] }), [navigate]);
   const push = useCallback((pg: PageInput) => {
@@ -264,8 +334,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [navigate]);
   const travel = useCallback((offset: -1 | 1) => {
     setFs(false);
-    setNavigation(previous => ({ ...previous, index: Math.max(0, Math.min(previous.index + offset, previous.entries.length - 1)) }));
-  }, [setFs]);
+    setNavigation(previous => {
+      const index = Math.max(0, Math.min(previous.index + offset, previous.entries.length - 1));
+      const next = previous.entries[index];
+      if (next) syncTheaterForDest(next);
+      return { ...previous, index };
+    });
+  }, [setFs, syncTheaterForDest]);
   const pop = useCallback(() => {
     if (envPlatform === "macos" && navigation.index > 0) travel(-1);
     else navigate(current => ({ ...current, stack: current.stack.slice(0, -1) }));
@@ -297,18 +372,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     return on;
   }, []);
-  const toggleFollowLocal = useCallback((uid: number) => {
+  const toggleFollowLocal = useCallback((uid: number, author?: { name: string; avatar?: string }) => {
     const on = !pRef.current.follows.includes(uid);
+    const nextAuthors = { ...pRef.current.followAuthors };
+    if (on && author?.name) nextAuthors[uid] = { id: uid, name: author.name, avatar: author.avatar };
+    else if (!on) delete nextAuthors[uid];
     pRef.current = {
       ...pRef.current,
       follows: on ? [uid, ...pRef.current.follows] : pRef.current.follows.filter((x) => x !== uid),
+      followAuthors: nextAuthors,
     };
     setP((s) => {
       const has = s.follows.includes(uid);
-      if (on === has) return s;
-      return { ...s, follows: on ? [uid, ...s.follows] : s.follows.filter((x) => x !== uid) };
+      const authors = { ...s.followAuthors };
+      if (on && author?.name) authors[uid] = { id: uid, name: author.name, avatar: author.avatar };
+      else if (!on) delete authors[uid];
+      if (on === has && (!on || !author?.name)) return s;
+      return { ...s, follows: on ? (has ? s.follows : [uid, ...s.follows]) : s.follows.filter((x) => x !== uid), followAuthors: authors };
     });
     return on;
+  }, []);
+  const removeFav = useCallback((id: number) => {
+    pRef.current = { ...pRef.current, favs: pRef.current.favs.filter((x) => x !== id) };
+    setP((s) => ({ ...s, favs: s.favs.filter((x) => x !== id) }));
+  }, []);
+  const removeLike = useCallback((id: number) => {
+    pRef.current = { ...pRef.current, likes: pRef.current.likes.filter((x) => x !== id) };
+    setP((s) => ({ ...s, likes: s.likes.filter((x) => x !== id) }));
+  }, []);
+  const removeHistory = useCallback((id: number) => {
+    setP((s) => ({ ...s, history: s.history.filter((x) => x.id !== id) }));
+  }, []);
+  const upsertVideoSnapshot = useCallback((snap: Omit<VideoSnapshot, "updatedAt">) => {
+    if (!snap.id || !snap.title) return;
+    setP((s) => {
+      const cur = s.videoSnapshots[snap.id];
+      const nextEntry: VideoSnapshot = { ...cur, ...snap, updatedAt: Date.now() };
+      const map: Record<number, VideoSnapshot> = { ...s.videoSnapshots, [snap.id]: nextEntry };
+      const keys = Object.keys(map);
+      if (keys.length > MAX_SNAPSHOTS) {
+        const sorted = keys
+          .map((k) => map[Number(k)])
+          .filter(Boolean)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, MAX_SNAPSHOTS);
+        const trimmed: Record<number, VideoSnapshot> = {};
+        for (const item of sorted) trimmed[item.id] = item;
+        return { ...s, videoSnapshots: trimmed };
+      }
+      return { ...s, videoSnapshots: map };
+    });
+  }, []);
+  const recordVideoOrientation = useCallback((id: number, w: number, h: number) => {
+    if (!id || w <= 0 || h <= 0) return;
+    const orientation: VideoOrientationMeta["orientation"] = w > h ? "landscape" : "portrait";
+    setP((s) => {
+      const prev = s.videoOrientations[id];
+      if (prev && prev.orientation === orientation && prev.w === w && prev.h === h) return s;
+      const entries = Object.entries(s.videoOrientations);
+      const map: Record<number, VideoOrientationMeta> =
+        entries.length >= MAX_ORIENTATIONS
+          ? Object.fromEntries(entries.slice(-(MAX_ORIENTATIONS - 1)))
+          : { ...s.videoOrientations };
+      map[id] = { orientation, w, h };
+      return { ...s, videoOrientations: map };
+    });
+  }, []);
+  const getVideoOrientation = useCallback((id: number) => pRef.current.videoOrientations[id], []);
+  const setLandscapeFitPref = useCallback((fit: "contain" | "cover") => {
+    setP((s) => (s.landscapeFitPref === fit ? s : { ...s, landscapeFitPref: fit }));
   }, []);
   const addHistory = useCallback((id: number, ep?: number, t?: number, dur?: number) => {
     if (!id) return;
@@ -330,6 +462,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const t = q.trim();
     if (!t) return;
     setP((s) => ({ ...s, searchHist: [t, ...s.searchHist.filter((x) => x !== t)].slice(0, 12) }));
+  }, []);
+  const removeSearchHist = useCallback((q: string) => {
+    setP((s) => ({ ...s, searchHist: s.searchHist.filter((x) => x !== q) }));
   }, []);
   const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), []);
 
@@ -359,22 +494,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme, setTheme, themePref, setThemePref,
     canGoBack: navigation.index > 0, canGoForward: navigation.index < navigation.entries.length - 1, travel,
     tab, setTab, stack, push, pop,
-    user, setUser, loginOpen, setLoginOpen, logout,
+    user, setUser, mergeUserInteractions, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, logout,
     likes: p.likes, favs: p.favs, history: p.history, follows: p.follows,
+    followAuthors: p.followAuthors, videoSnapshots: p.videoSnapshots,
+    upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation,
+    landscapeFitPref: p.landscapeFitPref, setLandscapeFitPref,
     isLiked: (id) => p.likes.includes(id),
     isFav: (id) => p.favs.includes(id),
-    toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
+    toggleLikeLocal, toggleFavLocal, removeFav, removeLike, removeHistory, toggleFollowLocal, addHistory, clearHistory,
     muted: p.muted, setMuted, volume: p.volume, setVolume,
     theater, setTheater, fs, setFs,
     muteOnStartup: p.muteOnStartup, setMuteOnStartup,
-    searchHist: p.searchHist, addSearch, clearSearchHist,
+    searchHist: p.searchHist, addSearch, removeSearchHist, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion,
     homeRefresh, bumpHomeRefresh,
     toasts, toast,
-  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
-    p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
-    setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
+  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, mergeUserInteractions, loginOpen, linePickerOpen, shortcutsOpen, logout,
+    p, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
+    toggleLikeLocal, toggleFavLocal, removeFav, removeLike, removeHistory, toggleFollowLocal, addHistory, clearHistory,
+    setMuted, setMuteOnStartup, setVolume, addSearch, removeSearchHist, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion, homeRefresh, bumpHomeRefresh, toasts, toast, theater, setTheater, fs, setFs]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

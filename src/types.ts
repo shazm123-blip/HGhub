@@ -135,3 +135,16 @@ export type User = {
     like_video_episodes: { video_id: number; ep: number }[];
   };
 };
+
+export type VideoOrientation = "portrait" | "landscape";
+export type VideoOrientationMeta = { orientation: VideoOrientation; w: number; h: number };
+export type VideoSnapshot = {
+  id: number;
+  title: string;
+  cover: string;
+  score?: number;
+  episode_count?: number;
+  is_finished?: boolean;
+  updatedAt: number;
+};
+export type FollowAuthor = { id: number; name: string; avatar?: string };

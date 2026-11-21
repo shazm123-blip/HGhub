@@ -3,7 +3,7 @@ import Feed from "../components/Feed";
 import { api } from "../api";
 import type { VideoCard } from "../types";
 import { useStore } from "../store";
-import { ISearch } from "../icons";
+import { IRefresh } from "../icons";
 import { Empty } from "../components/ui";
 
 const HOME_FEED_STORAGE_KEY = "hghub_home_feed_v1";
@@ -71,7 +71,7 @@ function pickRandomPage(visited: Set<number>, totalPages: number): number | null
 }
 
 export default function Home({ active, bottomInset }: { active: boolean; bottomInset: number }) {
-  const { toast, lineVersion, homeRefresh, history } = useStore();
+  const { toast, lineVersion, homeRefresh, history, setLinePickerOpen } = useStore();
   const initialPersist = useMemo(loadFeedState, []);
   const [items, setItems] = useState<VideoCard[]>([]);
   const [loading, setLoading] = useState(false);
@@ -188,7 +188,9 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
   }, [toast]);
 
   useEffect(() => {
-    void load(true, false);
+    if (!loadingRef.current && !itemsRef.current.length && !doneRef.current) {
+      void load(true, false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -232,11 +234,19 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
           onNearEnd={handleNearEnd} onView={handleView} />
       ) : !loading && error ? (
         <div className="absolute inset-0 flex items-center justify-center bg-bg">
-          <Empty icon={<ISearch size={26} />} title="首页加载失败" sub={error} action="重试" onAction={() => void load(true, false)} />
+          <Empty
+            icon={<IRefresh size={26} />}
+            title="首页加载失败"
+            sub={error}
+            action="重试"
+            onAction={() => void load(true, false)}
+            secondaryAction="切换线路"
+            onSecondaryAction={() => setLinePickerOpen(true)}
+          />
         </div>
       ) : !loading && done ? (
         <div className="absolute inset-0 flex items-center justify-center bg-bg">
-          <Empty icon={<ISearch size={26} />} title="暂无视频" action="重试" onAction={() => void load(true, false)} />
+          <Empty icon={<IRefresh size={26} />} title="暂无视频" action="重试" onAction={() => void load(true, false)} />
         </div>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center"><div className="w-9 h-9 spinner" /></div>

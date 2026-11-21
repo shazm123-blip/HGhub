@@ -432,6 +432,17 @@ pub fn clear_caches() {
     lock_cache(&SEG_CACHE).clear();
 }
 
+/// 统计当前内存缓存条目数与字节总数
+pub fn cache_stats() -> (usize, usize) {
+    let img = lock_cache(&IMG_CACHE);
+    let pl = lock_cache(&PL_CACHE);
+    let key = lock_cache(&KEY_CACHE);
+    let seg = lock_cache(&SEG_CACHE);
+    let entries = img.entries.len() + pl.entries.len() + key.entries.len() + seg.entries.len();
+    let bytes = img.total_bytes + pl.total_bytes + key.total_bytes + seg.total_bytes;
+    (entries, bytes)
+}
+
 /* ───────────────────────── 协议响应 ───────────────────────── */
 
 fn respond(status: u16, ctype: &str, body: Vec<u8>, cache: &str) -> Response<Vec<u8>> {
@@ -725,6 +736,19 @@ mod tests {
         // 超出单缓存总字节上限的条目跳过写入
         cache.put("oversize".into(), vec![0; 11], 11);
         assert!(cache.get("oversize").is_none());
+    }
+
+    #[test]
+    fn cache_stats_reports_entries_and_bytes_across_stores() {
+        clear_caches();
+        assert_eq!(cache_stats(), (0, 0));
+        lock_cache(&IMG_CACHE).put("k1".into(), Arc::new(vec![1u8; 10]), 10);
+        lock_cache(&PL_CACHE).put("k2".into(), Arc::new("abc".to_string()), 3);
+        let (entries, bytes) = cache_stats();
+        assert_eq!(entries, 2);
+        assert_eq!(bytes, 13);
+        clear_caches();
+        assert_eq!(cache_stats(), (0, 0));
     }
 
     #[test]

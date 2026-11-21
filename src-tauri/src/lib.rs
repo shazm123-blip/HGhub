@@ -194,6 +194,7 @@ pub fn run() {
             api::api_rank,
             api::api_search,
             api::cache_clear,
+            api::cache_stats,
             api::api_posts,
             api::api_post,
             api::api_post_like,
