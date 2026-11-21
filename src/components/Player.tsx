@@ -231,13 +231,13 @@ export default function Player({
   };
 
   const onStageDown = (e: React.PointerEvent<HTMLElement>) => {
-    if (!active || controlsLocked || !e.isPrimary || e.button !== 0 || dragRef.current) return;
+    if (e.pointerType !== "mouse" || !active || controlsLocked || !e.isPrimary || e.button !== 0 || dragRef.current) return;
     const width = e.currentTarget.clientWidth || wrapRef.current?.clientWidth || 390;
     dragRef.current = {
       id: e.pointerId,
       x: e.clientX,
       y: e.clientY,
-      base: time,
+      base: videoRef.current?.currentTime ?? time,
       width,
       playing: videoRef.current?.paused === false,
       scrubbing: false,
@@ -246,17 +246,19 @@ export default function Player({
   };
 
   const onStageMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType !== "mouse") return;
     const g = dragRef.current;
     if (!g || g.id !== e.pointerId || !e.isPrimary) return;
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
+    const total = duration || videoRef.current?.duration || 0;
     if (!g.scrubbing) {
-      if (duration > 0 && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+      if (Number.isFinite(total) && total > 0 && Math.abs(dx) > 10 && Math.abs(dx) >= Math.abs(dy) * 1.1) {
         g.scrubbing = true;
         g.startDx = dx;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
         showControlsTemporarily();
-        const res = computeScrubTarget(g.base, 0, g.width, duration);
+        const res = computeScrubTarget(g.base, 0, g.width, total);
         scrubTargetRef.current = res.target;
         setScrub(res);
       } else if (Math.abs(dy) > 16) {
@@ -264,14 +266,15 @@ export default function Player({
       }
       return;
     }
-    if (!duration) return;
+    if (!Number.isFinite(total) || total <= 0) return;
     showControlsTemporarily();
-    const res = computeScrubTarget(g.base, dx - g.startDx, g.width, duration);
+    const res = computeScrubTarget(g.base, dx - g.startDx, g.width, total);
     scrubTargetRef.current = res.target;
     setScrub(res);
   };
 
   const onStageUp = (e: React.PointerEvent<HTMLElement>, cancelled = false) => {
+    if (e.pointerType !== "mouse") return;
     const g = dragRef.current;
     if (!g || g.id !== e.pointerId) return;
     dragRef.current = null;
@@ -287,6 +290,99 @@ export default function Player({
       activity.play("drag_seek_resume", true);
     }
   };
+
+  const touchCtxRef = useRef({ active, controlsLocked, time, duration, showControlsTemporarily, applySeek, activity });
+  touchCtxRef.current = { active, controlsLocked, time, duration, showControlsTemporarily, applySeek, activity };
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return undefined;
+    let tg: {
+      x: number; y: number; t: number; base: number; width: number;
+      playing: boolean; mode: "idle" | "scrub" | "vertical"; startDx: number;
+    } | null = null;
+
+    const onTouchStart = (e: TouchEvent) => {
+      const ctx = touchCtxRef.current;
+      if (ctx.controlsLocked || !ctx.active || e.touches.length !== 1 || tg) return;
+      const t0 = e.touches[0];
+      const width = el.clientWidth || wrapRef.current?.clientWidth || 390;
+      tg = {
+        x: t0.clientX,
+        y: t0.clientY,
+        t: Date.now(),
+        base: el.currentTime || ctx.time,
+        width,
+        playing: el.paused === false,
+        mode: "idle",
+        startDx: 0,
+      };
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tg || e.touches.length !== 1) return;
+      const ctx = touchCtxRef.current;
+      if (ctx.controlsLocked || !ctx.active) { tg = null; return; }
+      const t0 = e.touches[0];
+      const dx = t0.clientX - tg.x;
+      const dy = t0.clientY - tg.y;
+      if (tg.mode === "vertical") return;
+      const total = ctx.duration || el.duration || 0;
+      if (tg.mode === "idle") {
+        if (Number.isFinite(total) && total > 0 && Math.abs(dx) > 8 && Math.abs(dx) >= Math.abs(dy) * 1.1) {
+          e.preventDefault();
+          tg.mode = "scrub";
+          tg.startDx = dx;
+          ctx.showControlsTemporarily();
+          const res = computeScrubTarget(tg.base, 0, tg.width, total);
+          scrubTargetRef.current = res.target;
+          setScrub(res);
+        } else if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.1) {
+          tg.mode = "vertical";
+        }
+        return;
+      }
+      if (tg.mode === "scrub") {
+        e.preventDefault();
+        if (!Number.isFinite(total) || total <= 0) return;
+        ctx.showControlsTemporarily();
+        const res = computeScrubTarget(tg.base, dx - tg.startDx, tg.width, total);
+        scrubTargetRef.current = res.target;
+        setScrub(res);
+      }
+    };
+
+    const onTouchEndOrCancel = (e: TouchEvent) => {
+      if (e.touches.length > 0 || !tg) return;
+      const g = tg;
+      tg = null;
+      if (g.mode !== "scrub") return;
+      const ctx = touchCtxRef.current;
+      const cancelled = e.type === "touchcancel";
+      const target = scrubTargetRef.current;
+      scrubTargetRef.current = null;
+      setScrub(null);
+      suppressClickUntilRef.current = Date.now() + 350;
+      if (!cancelled && target != null) {
+        ctx.applySeek(target, "drag_gesture");
+      }
+      if (!cancelled && g.playing && ctx.active && !ctx.controlsLocked) {
+        ctx.activity.play("drag_seek_resume", true);
+      }
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEndOrCancel);
+    el.addEventListener("touchcancel", onTouchEndOrCancel);
+    return () => {
+      tg = null;
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEndOrCancel);
+      el.removeEventListener("touchcancel", onTouchEndOrCancel);
+    };
+  }, []);
 
   const cycleRate = () => {
     const video = videoRef.current;
@@ -347,8 +443,8 @@ export default function Player({
       />
 
       {scrub && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none" style={{ background: "rgba(0,0,0,.22)" }}>
-          <div className="px-4 py-2.5 rounded-2xl backdrop-blur-md flex flex-col items-center" style={{ background: "rgba(0,0,0,.58)" }}>
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none">
+          <div className="px-4 py-2.5 rounded-2xl backdrop-blur-md flex flex-col items-center" style={{ background: "rgba(0,0,0,.62)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
             <div className="flex items-baseline gap-1.5 tabular-nums">
               <span className="text-[22px] font-bold text-white">{fmtTime(scrub.target)}</span>
               <span className="text-[12px] text-white/65">/ {fmtTime(duration)}</span>

@@ -118,6 +118,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [scrub, setScrub] = useState<{ pct: number; target: number; delta: number } | null>(null);
   const scrubTarget = useRef<number | null>(null);
   const suppressClickUntilRef = useRef(0);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
   /* 竖屏下横屏视频适应模式 + 双指无级缩放/平移 */
   const [portraitFit, setPortraitFit] = useState<"contain" | "cover">("contain");
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0, gesturing: false });
@@ -131,7 +132,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [barPct, setBarPct] = useState<number | null>(null);
   const gesture = useRef<{
     x: number; y: number; startX: number; startY: number; t: number; timer: number | null;
-    mode: "idle" | "hold" | "scrub" | "pan"; base: number; width: number; playing: boolean;
+    mode: "idle" | "hold" | "scrub" | "pan" | "vertical"; base: number; width: number; playing: boolean;
     zoomed: boolean; zoomX: number; zoomY: number; scrubStartDx: number;
   } | null>(null);
 
@@ -487,7 +488,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     else el.requestFullscreen().catch(() => {});
   };
 
-  /* —— 双指捏合缩放 & 平移（Pinch-to-Zoom & Pan） —— */
+  /* —— 移动端原生触摸手势（{ passive: false } 锁横滑防 iOS 滚动取消）+ 桌面端鼠标横拖 —— */
   const cancelSingleGesture = () => {
     const g = gesture.current;
     if (g?.timer) window.clearTimeout(g.timer);
@@ -502,149 +503,307 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     scrubTarget.current = null;
   };
 
-  const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked) return;
-    if (e.touches.length === 2) {
-      cancelSingleGesture();
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
-      const dist0 = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
-      const midX0 = (t0.clientX + t1.clientX) / 2;
-      const midY0 = (t0.clientY + t1.clientY) / 2;
-      pinchRef.current = {
-        dist0,
-        midX0,
-        midY0,
-        scale0: zoom.scale,
-        x0: zoom.x,
-        y0: zoom.y,
-      };
-    }
+  const touchCtxRef = useRef({
+    active,
+    controlsLocked,
+    isDesktop,
+    rotated,
+    time,
+    duration,
+    zoom,
+    cancelKeepPlaying,
+    cancelSingleGesture,
+    setZoom,
+    setScrub,
+    setTime,
+    setErr,
+    setHoldSpeed,
+    setLockArmed,
+    setSpeedLock,
+    toast,
+  });
+  touchCtxRef.current = {
+    active,
+    controlsLocked,
+    isDesktop,
+    rotated,
+    time,
+    duration,
+    zoom,
+    cancelKeepPlaying,
+    cancelSingleGesture,
+    setZoom,
+    setScrub,
+    setTime,
+    setErr,
+    setHoldSpeed,
+    setLockArmed,
+    setSpeedLock,
+    toast,
   };
 
-  const onTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked) return;
-    if (e.touches.length === 2 && pinchRef.current) {
-      const p = pinchRef.current;
-      const t0 = e.touches[0];
-      const t1 = e.touches[1];
-      const dist = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
-      const midX = (t0.clientX + t1.clientX) / 2;
-      const midY = (t0.clientY + t1.clientY) / 2;
-      const nextScale = Math.max(0.85, Math.min(3.5, p.scale0 * (dist / p.dist0)));
-      const rawDx = midX - p.midX0;
-      const rawDy = midY - p.midY0;
-      const dx = rotated ? rawDy : rawDx;
-      const dy = rotated ? -rawDx : rawDy;
-      const stageW = rotated ? window.innerHeight : window.innerWidth;
-      const stageH = rotated ? window.innerWidth : window.innerHeight;
-      const maxX = Math.max(0, (nextScale - 1) * stageW * 0.55);
-      const maxY = Math.max(0, (nextScale - 1) * stageH * 0.55);
-      const nextX = Math.max(-maxX, Math.min(maxX, p.x0 + dx));
-      const nextY = Math.max(-maxY, Math.min(maxY, p.y0 + dy));
-      setZoom({ scale: nextScale, x: nextX, y: nextY, gesturing: true });
-    }
-  };
+  useEffect(() => {
+    if (!stageEl) return undefined;
 
-  const onTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isDesktop) return;
-    if (pinchRef.current && e.touches.length < 2) {
-      pinchRef.current = null;
-      setZoom((prev) =>
-        prev.scale < 1.08
-          ? { scale: 1, x: 0, y: 0, gesturing: false }
-          : { ...prev, gesturing: false },
-      );
-    }
-  };
-
-  /* —— 长按 2x（上滑锁定） / 全屏横拖快进快退 / 放大平移 / 单击暂停或播放 —— */
-  const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
-    const el = e.currentTarget;
-    const span = rotated ? (el.clientHeight || window.innerHeight || 1) : (el.clientWidth || 1);
-    const g = {
-      x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
-      t: Date.now(), base: time, width: span,
-      playing: videoRef.current?.el()?.paused === false,
-      zoomed: !isDesktop && zoomRef.current.scale > 1.05,
-      zoomX: zoomRef.current.x,
-      zoomY: zoomRef.current.y,
-      scrubStartDx: 0,
-      mode: "idle" as "idle" | "hold" | "scrub" | "pan",
-      timer: isDesktop ? null : (window.setTimeout(() => {
-        const cur = gesture.current;
-        if (!cur || cur.mode !== "idle" || pinchRef.current) return;
-        cur.mode = "hold";
-        holdRef.current = true;
-        setHoldSpeed(true);
-        setLockArmed(false);
-        lockArmedRef.current = false;
-        try { navigator.vibrate?.(25); } catch { /* ignore */ }
-      }, 380) as unknown as number),
+    const onNativeTouchStart = (e: TouchEvent) => {
+      const ctx = touchCtxRef.current;
+      if (ctx.isDesktop || ctx.controlsLocked || !ctx.active) return;
+      if (e.touches.length === 2) {
+        ctx.cancelSingleGesture();
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        const dist0 = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
+        const midX0 = (t0.clientX + t1.clientX) / 2;
+        const midY0 = (t0.clientY + t1.clientY) / 2;
+        pinchRef.current = {
+          dist0,
+          midX0,
+          midY0,
+          scale0: ctx.zoom.scale,
+          x0: ctx.zoom.x,
+          y0: ctx.zoom.y,
+        };
+      } else if (e.touches.length === 1 && !pinchRef.current && !gesture.current) {
+        const t0 = e.touches[0];
+        const span = ctx.rotated ? (stageEl.clientHeight || window.innerHeight || 1) : (stageEl.clientWidth || 1);
+        const base = videoRef.current?.el()?.currentTime ?? ctx.time;
+        gesture.current = {
+          x: t0.clientX,
+          y: t0.clientY,
+          startX: t0.clientX,
+          startY: t0.clientY,
+          t: Date.now(),
+          base,
+          width: span,
+          playing: videoRef.current?.el()?.paused === false,
+          zoomed: zoomRef.current.scale > 1.05,
+          zoomX: zoomRef.current.x,
+          zoomY: zoomRef.current.y,
+          scrubStartDx: 0,
+          mode: "idle",
+          timer: window.setTimeout(() => {
+            const cur = gesture.current;
+            if (!cur || cur.mode !== "idle" || pinchRef.current) return;
+            cur.mode = "hold";
+            holdRef.current = true;
+            touchCtxRef.current.setHoldSpeed(true);
+            touchCtxRef.current.setLockArmed(false);
+            lockArmedRef.current = false;
+            try { navigator.vibrate?.(25); } catch { /* ignore */ }
+          }, 380) as unknown as number,
+        };
+      }
     };
-    gesture.current = g;
+
+    const onNativeTouchMove = (e: TouchEvent) => {
+      const ctx = touchCtxRef.current;
+      if (ctx.isDesktop || ctx.controlsLocked) return;
+      if (e.touches.length === 2 && pinchRef.current) {
+        e.preventDefault();
+        const p = pinchRef.current;
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        const dist = Math.max(12, Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY));
+        const midX = (t0.clientX + t1.clientX) / 2;
+        const midY = (t0.clientY + t1.clientY) / 2;
+        const nextScale = Math.max(0.85, Math.min(3.5, p.scale0 * (dist / p.dist0)));
+        const rawDx = midX - p.midX0;
+        const rawDy = midY - p.midY0;
+        const dx = ctx.rotated ? rawDy : rawDx;
+        const dy = ctx.rotated ? -rawDx : rawDy;
+        const stageW = ctx.rotated ? window.innerHeight : window.innerWidth;
+        const stageH = ctx.rotated ? window.innerWidth : window.innerHeight;
+        const maxX = Math.max(0, (nextScale - 1) * stageW * 0.55);
+        const maxY = Math.max(0, (nextScale - 1) * stageH * 0.55);
+        const nextX = Math.max(-maxX, Math.min(maxX, p.x0 + dx));
+        const nextY = Math.max(-maxY, Math.min(maxY, p.y0 + dy));
+        ctx.setZoom({ scale: nextScale, x: nextX, y: nextY, gesturing: true });
+        return;
+      }
+      if (pinchRef.current) {
+        ctx.cancelSingleGesture();
+        return;
+      }
+      const g = gesture.current;
+      if (!g || e.touches.length !== 1) return;
+      const t0 = e.touches[0];
+      const rawDx = t0.clientX - g.x;
+      const rawDy = t0.clientY - g.y;
+      const dx = ctx.rotated ? rawDy : rawDx;
+      const dy = ctx.rotated ? -rawDx : rawDy;
+
+      if (g.mode === "hold") {
+        e.preventDefault();
+        const upDist = ctx.rotated ? (t0.clientX - g.startX) : (g.startY - t0.clientY);
+        const armed = upDist > 64;
+        if (armed !== lockArmedRef.current) {
+          lockArmedRef.current = armed;
+          ctx.setLockArmed(armed);
+        }
+        return;
+      }
+
+      if (g.mode === "vertical") return;
+
+      if (g.mode === "idle") {
+        const total = ctx.duration || videoRef.current?.el()?.duration || 0;
+        if (g.zoomed && Math.hypot(dx, dy) > 6) {
+          e.preventDefault();
+          if (g.timer) window.clearTimeout(g.timer);
+          g.mode = "pan";
+        } else if (Number.isFinite(total) && total > 0 && Math.abs(dx) > 8 && Math.abs(dx) >= Math.abs(dy) * 1.1) {
+          e.preventDefault();
+          if (g.timer) window.clearTimeout(g.timer);
+          g.mode = "scrub";
+          g.scrubStartDx = dx;
+          const res = computeScrubTarget(g.base, 0, g.width, total);
+          scrubTarget.current = res.target;
+          ctx.setScrub(res);
+        } else if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.1) {
+          if (g.timer) window.clearTimeout(g.timer);
+          g.mode = "vertical";
+        }
+        return;
+      }
+
+      if (g.mode === "pan" && g.zoomed) {
+        e.preventDefault();
+        const stageW = ctx.rotated ? window.innerHeight : window.innerWidth;
+        const stageH = ctx.rotated ? window.innerWidth : window.innerHeight;
+        const maxX = Math.max(0, (zoomRef.current.scale - 1) * stageW * 0.55);
+        const maxY = Math.max(0, (zoomRef.current.scale - 1) * stageH * 0.55);
+        const nextX = Math.max(-maxX, Math.min(maxX, g.zoomX + dx));
+        const nextY = Math.max(-maxY, Math.min(maxY, g.zoomY + dy));
+        ctx.setZoom((prev) => ({ ...prev, x: nextX, y: nextY, gesturing: true }));
+        return;
+      }
+
+      if (g.mode === "scrub") {
+        e.preventDefault();
+        const total = ctx.duration || videoRef.current?.el()?.duration || 0;
+        if (!Number.isFinite(total) || total <= 0) return;
+        const res = computeScrubTarget(g.base, dx - g.scrubStartDx, g.width, total);
+        scrubTarget.current = res.target;
+        ctx.setScrub(res);
+      }
+    };
+
+    const onNativeTouchEndOrCancel = (e: TouchEvent) => {
+      const ctx = touchCtxRef.current;
+      if (ctx.isDesktop) return;
+      if (pinchRef.current && e.touches.length < 2) {
+        pinchRef.current = null;
+        ctx.setZoom((prev) =>
+          prev.scale < 1.08
+            ? { scale: 1, x: 0, y: 0, gesturing: false }
+            : { ...prev, gesturing: false },
+        );
+        return;
+      }
+      if (e.touches.length > 0) return;
+      const cancelled = e.type === "touchcancel";
+      const g = gesture.current;
+      gesture.current = null;
+      if (!g) return;
+      if (g.timer) window.clearTimeout(g.timer);
+
+      if (g.mode === "pan" && g.zoomed) {
+        ctx.setZoom((prev) => (prev.gesturing ? { ...prev, gesturing: false } : prev));
+        return;
+      }
+
+      if (g.mode === "hold") {
+        holdRef.current = false;
+        ctx.setHoldSpeed(false);
+        if (!cancelled && lockArmedRef.current) {
+          ctx.setSpeedLock(true);
+          ctx.toast("已锁定 2.0x 倍速 · 点顶部标签解除", "info");
+        }
+        lockArmedRef.current = false;
+        ctx.setLockArmed(false);
+        return;
+      }
+
+      if (g.mode === "scrub") {
+        const target = scrubTarget.current;
+        ctx.setScrub(null);
+        scrubTarget.current = null;
+        suppressClickUntilRef.current = Date.now() + 350;
+        if (!cancelled && target != null) {
+          ctx.setErr("");
+          ctx.setTime(target);
+          videoRef.current?.seek(target, "mobile_gesture");
+        }
+        if (!cancelled && g.playing && ctx.active && !ctx.controlsLocked) videoRef.current?.play();
+        return;
+      }
+
+      if (!cancelled && g.mode === "idle" && Date.now() - g.t < 380) {
+        const t = e.changedTouches[0];
+        const moveDist = t ? Math.hypot(t.clientX - g.x, t.clientY - g.y) : 0;
+        if (moveDist < 16) {
+          suppressClickUntilRef.current = Date.now() + 350;
+          ctx.cancelKeepPlaying();
+          videoRef.current?.toggle();
+        }
+      }
+    };
+
+    stageEl.addEventListener("touchstart", onNativeTouchStart, { passive: true });
+    stageEl.addEventListener("touchmove", onNativeTouchMove, { passive: false });
+    stageEl.addEventListener("touchend", onNativeTouchEndOrCancel);
+    stageEl.addEventListener("touchcancel", onNativeTouchEndOrCancel);
+    return () => {
+      pinchRef.current = null;
+      if (gesture.current?.timer) window.clearTimeout(gesture.current.timer);
+      gesture.current = null;
+      stageEl.removeEventListener("touchstart", onNativeTouchStart);
+      stageEl.removeEventListener("touchmove", onNativeTouchMove);
+      stageEl.removeEventListener("touchend", onNativeTouchEndOrCancel);
+      stageEl.removeEventListener("touchcancel", onNativeTouchEndOrCancel);
+    };
+  }, [stageEl]);
+
+  /* —— 桌面端鼠标横拖快进快退 —— */
+  const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType !== "mouse" || controlsLocked || !active || !e.isPrimary || gesture.current || e.button !== 0) return;
+    const el = e.currentTarget;
+    const span = el.clientWidth || 1;
+    gesture.current = {
+      x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
+      t: Date.now(), base: videoRef.current?.el()?.currentTime ?? time, width: span,
+      playing: videoRef.current?.el()?.paused === false,
+      zoomed: false, zoomX: 0, zoomY: 0, scrubStartDx: 0,
+      mode: "idle", timer: null,
+    };
   };
 
   const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (pinchRef.current) {
-      cancelSingleGesture();
-      return;
-    }
+    if (e.pointerType !== "mouse") return;
     const g = gesture.current;
     if (!g || !e.isPrimary) return;
-    const rawDx = e.clientX - g.x;
-    const rawDy = e.clientY - g.y;
-    const dx = rotated ? rawDy : rawDx;
-    const dy = rotated ? -rawDx : rawDy;
-
-    /* 长按中：上滑 64px 进入「松开即锁定」 */
-    if (g.mode === "hold") {
-      const upDist = rotated ? (e.clientX - g.startX) : (g.startY - e.clientY);
-      const armed = upDist > 64;
-      if (armed !== lockArmedRef.current) {
-        lockArmedRef.current = armed;
-        setLockArmed(armed);
-      }
-      return;
-    }
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    const total = duration || videoRef.current?.el()?.duration || 0;
 
     if (g.mode === "idle") {
-      if (!isDesktop && g.zoomed && Math.hypot(dx, dy) > 6) {
-        if (g.timer) window.clearTimeout(g.timer);
-        g.mode = "pan";
-        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      } else if (duration > 0 && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
-        if (g.timer) window.clearTimeout(g.timer);
+      if (Number.isFinite(total) && total > 0 && Math.abs(dx) > 10 && Math.abs(dx) >= Math.abs(dy) * 1.1) {
         g.mode = "scrub";
         g.scrubStartDx = dx;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-        if (isDesktop) wake();
-        const res = computeScrubTarget(g.base, 0, g.width, duration);
+        wake();
+        const res = computeScrubTarget(g.base, 0, g.width, total);
         scrubTarget.current = res.target;
         setScrub(res);
-      } else if (!isDesktop && Math.abs(dy) > 16) {
-        if (g.timer) window.clearTimeout(g.timer);
-        g.mode = "pan";
+      } else if (Math.abs(dy) > 16) {
+        g.mode = "vertical";
       }
-      return;
-    }
-
-    if (g.mode === "pan" && g.zoomed) {
-      const stageW = rotated ? window.innerHeight : window.innerWidth;
-      const stageH = rotated ? window.innerWidth : window.innerHeight;
-      const maxX = Math.max(0, (zoomRef.current.scale - 1) * stageW * 0.55);
-      const maxY = Math.max(0, (zoomRef.current.scale - 1) * stageH * 0.55);
-      const nextX = Math.max(-maxX, Math.min(maxX, g.zoomX + dx));
-      const nextY = Math.max(-maxY, Math.min(maxY, g.zoomY + dy));
-      setZoom((prev) => ({ ...prev, x: nextX, y: nextY, gesturing: true }));
       return;
     }
 
     if (g.mode === "scrub") {
-      const total = duration || 0;
-      if (!total) return;
-      if (isDesktop) wake();
+      if (!Number.isFinite(total) || total <= 0) return;
+      wake();
       const res = computeScrubTarget(g.base, dx - g.scrubStartDx, g.width, total);
       scrubTarget.current = res.target;
       setScrub(res);
@@ -652,7 +811,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   };
 
   const onUp = (e?: React.PointerEvent<HTMLDivElement>, cancelled = false) => {
-    if (pinchRef.current) return;
+    if (e && e.pointerType !== "mouse") return;
     const g = gesture.current;
     gesture.current = null;
     if (!g) return;
@@ -674,6 +833,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       setLockArmed(false);
       return;
     }
+
     if (g.mode === "scrub") {
       const target = scrubTarget.current;
       setScrub(null);
@@ -685,14 +845,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         videoRef.current?.seek(target, isDesktop ? "desktop_drag_gesture" : "mobile_gesture");
       }
       if (!cancelled && g.playing && active && !controlsLocked) videoRef.current?.play();
-      return;
-    }
-
-    if (isDesktop || cancelled || g.mode !== "idle") return;
-    const moveDist = e ? Math.hypot(e.clientX - g.x, e.clientY - g.y) : 0;
-    if (Date.now() - g.t < 380 && moveDist < 16) {
-      cancelKeepPlaying();
-      videoRef.current?.toggle();
     }
   };
 
@@ -924,17 +1076,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
               {mountVideo ? (
                 <div className={rotated ? "fs-landscape" : (!isDesktop && activeFs ? "fs-immersive" : "absolute inset-0")}>
                   <div
+                    ref={setStageEl}
                     className={`absolute inset-0 overflow-hidden select-none ${isDesktop && scrub ? "cursor-ew-resize" : ""}`}
                     style={{ touchAction: activeFs || zoom.scale > 1.05 ? "none" : "pan-y" }}
-                    onTouchStart={onTouchStart}
-                    onTouchMove={onTouchMove}
-                    onTouchEnd={onTouchEnd}
-                    onTouchCancel={onTouchEnd}
                     onPointerDown={onDown}
                     onPointerMove={onMove}
                     onPointerUp={(e) => onUp(e, false)}
                     onPointerCancel={(e) => onUp(e, true)}
-                    onLostPointerCapture={(e) => { if (gesture.current && gesture.current.mode !== "idle") onUp(e, true); }}>
+                    onLostPointerCapture={(e) => { if (e.pointerType === "mouse" && gesture.current && gesture.current.mode !== "idle") onUp(e, true); }}>
                     <VideoSurface
                       ref={videoRef}
                       src={playUrl}
@@ -966,15 +1115,15 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
                   {/* 横拖定位浮层（移动端 & 桌面端通用） */}
                   {scrub && (
-                    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none" style={{ background: "rgba(0,0,0,.24)" }}>
-                      <div className="px-5 py-3.5 rounded-2xl backdrop-blur-md flex flex-col items-center min-w-[200px] max-w-[72%]"
-                        style={{ background: "rgba(0,0,0,.58)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.1)" }}>
+                    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none">
+                      <div className="px-5 py-3 rounded-2xl backdrop-blur-md flex flex-col items-center min-w-[200px] max-w-[72%]"
+                        style={{ background: "rgba(0,0,0,.62)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
                         <div className="flex items-baseline gap-1.5 tabular-nums">
-                          <span className="text-[25px] font-bold hg-ink">{fmtTime(scrub.target)}</span>
+                          <span className="text-[24px] font-bold hg-ink">{fmtTime(scrub.target)}</span>
                           <span className="text-[12px] hg-ink-4">/ {fmtTime(duration)}</span>
                         </div>
                         <span className="mt-0.5 text-[12px] font-semibold hg-ink-2 tabular-nums">{formatScrubDelta(scrub.delta)}</span>
-                        <div className="mt-3 w-full min-w-[160px] h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,.25)" }}>
+                        <div className="mt-2.5 w-full min-w-[160px] h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,.25)" }}>
                           <div className="h-full bg-white" style={{ width: `${scrub.pct}%` }} />
                         </div>
                       </div>
@@ -1062,9 +1211,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       <div className="absolute z-30" style={{ left: fsLeft, right: fsRight, bottom: fsBarBottom, height: 26 }}>
                         <div className="relative h-full" style={{ touchAction: "none" }}
                           onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarCancel}>
-                          <div className={`absolute inset-x-0 bottom-[10px] rounded-full transition-all ${barPct !== null ? "h-[5px]" : "h-[3px]"}`}
+                          <div className={`absolute inset-x-0 bottom-[10px] rounded-full transition-all ${barPct !== null || scrub !== null ? "h-[5px]" : "h-[3px]"}`}
                             style={{ background: "rgba(255,255,255,.3)" }}>
-                            <div className="h-full rounded-full bg-white" style={{ width: `${barProgress * 100}%` }} />
+                            <div className="h-full rounded-full bg-white" style={{ width: `${barProgress * 100}%`, transition: barPct !== null || scrub !== null ? "none" : undefined }} />
                           </div>
                           {barPct !== null && (
                             <div className="absolute left-1/2 -translate-x-1/2 -top-8 px-2.5 py-1 rounded-md hg-chip-strong backdrop-blur-md text-[12px] font-bold tabular-nums whitespace-nowrap">
@@ -1316,31 +1465,31 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
               {/* 移动端：标题 + 详情标签 + 进度线 */}
               {isActive && !activeFs && !isDesktop && (
-                <div className="absolute inset-x-0 z-20" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
+                <div className="absolute inset-x-0 z-20 pointer-events-none" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
                   <div className="absolute inset-x-0 bottom-0 h-[190px] pointer-events-none"
                     style={{ background: "linear-gradient(0deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.42) 45%, transparent 100%)" }} />
-                  <p className="relative pl-4 pr-[72px] pb-2 text-[14px] font-semibold leading-snug hg-ink hg-ov-shadow clamp-2">{meta.title}</p>
+                  <p className="relative pl-4 pr-[72px] pb-2 text-[14px] font-semibold leading-snug hg-ink hg-ov-shadow clamp-2 pointer-events-none">{meta.title}</p>
                   <div className="relative pt-1.5 pb-2">
                     <div className="pl-4 pr-[72px] flex items-center gap-2">
                       <button onClick={() => setPanel("detail")}
-                        className="flex items-center gap-0.5 text-[10.5px] font-medium hg-ink hg-ov-shadow pressable">
+                        className="pointer-events-auto flex items-center gap-0.5 text-[10.5px] font-medium hg-ink hg-ov-shadow pressable">
                         {kind === "post" ? "查看详情" : episodes.length > 0 ? `详情 · 第 ${curEp}/${episodes.length} 集` : `详情 · 第 ${curEp} 集`}<IChevR size={11} />
                       </button>
                       {nextEp && (
                         <button onClick={goNextEp}
                           aria-label={`下一集（第 ${nextEp.ep_num} 集）`}
-                          className="hg-chip px-2 h-5 rounded-full flex items-center gap-1 text-[10.5px] font-semibold hg-ink pressable">
+                          className="pointer-events-auto hg-chip px-2 h-5 rounded-full flex items-center gap-1 text-[10.5px] font-semibold hg-ink pressable">
                           <INext size={11} strokeWidth={1.8} />下一集
                         </button>
                       )}
                     </div>
                     {isActive && (
-                      <div className="mx-4 mt-1.5 relative" style={{ height: 22, touchAction: "none" }}
+                      <div className="mx-4 mt-1.5 relative pointer-events-auto" style={{ height: 22, touchAction: "none" }}
                         onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarCancel}>
-                        <div className={`absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full transition-all ${barPct !== null ? "h-[5px]" : "h-[2.5px]"}`}
+                        <div className={`absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full transition-all ${barPct !== null || scrub !== null ? "h-[5px]" : "h-[2.5px]"}`}
                           style={{ background: "rgba(255,255,255,.3)" }}>
                           <div className="h-full rounded-full bg-white"
-                            style={{ width: `${barProgress * 100}%`, transition: barPct !== null ? "none" : "width .25s linear" }} />
+                            style={{ width: `${barProgress * 100}%`, transition: barPct !== null || scrub !== null ? "none" : "width .25s linear" }} />
                         </div>
                         {barPct !== null && (
                           <div className="absolute left-1/2 -translate-x-1/2 -top-8 px-2.5 py-1 rounded-md hg-chip-strong backdrop-blur-md text-[12px] font-bold tabular-nums whitespace-nowrap">

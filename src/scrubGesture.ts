@@ -3,8 +3,8 @@ import { fmtTime } from "./api";
 /** Calculate total time span swept by one effective screen width of horizontal drag. */
 export function scrubSpanSeconds(duration: number): number {
   if (!Number.isFinite(duration) || duration <= 0) return 0;
-  if (duration <= 90) return duration * 0.85;
-  return Math.min(duration, Math.min(240, 76.5 + Math.sqrt(duration - 90) * 3.0));
+  if (duration <= 90) return duration * 0.9;
+  return Math.min(duration, Math.min(180, 81 + Math.sqrt(duration - 90) * 2.5));
 }
 
 /** Map a horizontal drag delta (after dead-zone offset) to a bounded seek target. */
