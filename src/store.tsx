@@ -140,8 +140,6 @@ type Store = {
   toggleFollowLocal: (uid: number) => boolean;
   theater: boolean; setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
   fs: boolean; setFs: (v: boolean | ((p: boolean) => boolean)) => void;
-  /** 清屏模式（单击屏幕消除所有控件，只保留纯视频内容） */
-  clean: boolean; setClean: (v: boolean | ((p: boolean) => boolean)) => void;
   muted: boolean; setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
   muteOnStartup: boolean; setMuteOnStartup: (on: boolean) => void;
   volume: number; setVolume: (v: number) => void;
@@ -173,7 +171,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [theater, setTheaterState] = useState(false);
   const [fs, setFsState] = useState(false);
-  const [clean, setCleanState] = useState(false);
   const [strictSecurity, setStrictSecurityState] = useState<boolean>(isStrictSecurity);
   const [cliRelaxed, setCliRelaxed] = useState(false);
   const [strictSecurityReady, setStrictSecurityReady] = useState(false);
@@ -246,7 +243,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const navigate = useCallback((update: (current: Destination) => Destination) => {
-    setCleanState(false);
     setFs(false);
     setNavigation(previous => {
       const current = previous.entries[previous.index];
@@ -264,7 +260,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     navigate(current => ({ ...current, stack: [...current.stack, page] }));
   }, [navigate]);
   const travel = useCallback((offset: -1 | 1) => {
-    setCleanState(false);
     setFs(false);
     setNavigation(previous => ({ ...previous, index: Math.max(0, Math.min(previous.index + offset, previous.entries.length - 1)) }));
   }, [setFs]);
@@ -345,10 +340,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTheaterState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
   }, []);
 
-  const setClean = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
-    setCleanState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
-  }, []);
-
   const setMuted = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setP((s) => ({ ...s, muted: typeof v === "function" ? v(s.muted) : v }));
   }, []);
@@ -371,7 +362,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     isFav: (id) => p.favs.includes(id),
     toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     muted: p.muted, setMuted, volume: p.volume, setVolume,
-    theater, setTheater, fs, setFs, clean, setClean,
+    theater, setTheater, fs, setFs,
     muteOnStartup: p.muteOnStartup, setMuteOnStartup,
     searchHist: p.searchHist, addSearch, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
@@ -380,7 +371,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs, clean, setClean]);
+    lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

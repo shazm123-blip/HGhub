@@ -95,7 +95,7 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
 
 /* ============ 统一主视口（桌面 / 移动共用） ============ */
 function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
-  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs, clean } = useStore();
+  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, fs } = useStore();
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
 
@@ -135,7 +135,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 
   const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
   const pageActive = stack.length === 0 && !loginOpen;
-  const bottomInset = isMobile ? (fs || clean ? 0 : platform === "ios" ? 49 : 40) : 14;
+  const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 49 : 40) : 14;
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
@@ -151,11 +151,11 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
         {stack.map((p, i) => (
           <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
             <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !loginOpen} bottomInset={stackInset} />
-            {platform === "ios" && i === stack.length - 1 && !loginOpen && !fs && !clean && <IosBackEdge onBack={pop} />}
+            {platform === "ios" && i === stack.length - 1 && !loginOpen && !fs && <IosBackEdge onBack={pop} />}
           </div>
         ))}
 
-        {isMobile && !fs && !clean && stack.length === 0 && <TabBar />}
+        {isMobile && !fs && stack.length === 0 && <TabBar />}
       </div>
     </div>
   );

@@ -139,7 +139,7 @@ mod tests {
         let text = fs::read_to_string(dir.join("debug.log")).unwrap();
         let lines: Vec<_> = text.lines().collect();
         assert_eq!(lines.len(), 64);
-        for pair in lines.chunks_exact(2) {
+        for pair in lines.as_chunks::<2>().0 {
             assert_eq!(pair[1], pair[0].replace("start ", "end "));
             assert!(pair[0].contains("Z] [pid="));
         }

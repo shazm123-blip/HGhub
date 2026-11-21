@@ -206,10 +206,6 @@ export default function Player({
   };
 
   const onVideoClick = () => {
-    if (isMobile && playing && !controlsShown) {
-      showControlsTemporarily();
-      return;
-    }
     toggle();
   };
 
@@ -295,7 +291,7 @@ export default function Player({
             paddingLeft: "max(var(--sal, 0px), 12px)",
             paddingRight: "max(var(--sar, 0px), 12px)",
           } : undefined}
-          className={`absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${!playing || controlsShown ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"}`}>
+          className={`absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${!playing || controlsShown ? "opacity-100" : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"}`}>
           <input aria-label="播放进度" type="range" {...seek.inputProps}
             className="hg-range w-full" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
           <div className="flex items-center gap-3 mt-1 text-white">

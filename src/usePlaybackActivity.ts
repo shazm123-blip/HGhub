@@ -29,7 +29,7 @@ export function usePlaybackActivity(
     latest.current.trace("play.request", { source });
     v.play().then(() => {
       // The page may have changed while play() was pending.
-      if (!mounted.current || !latest.current.active) v.pause();
+      if (!mounted.current || !latest.current.active || !wanted.current) v.pause();
     }).catch(e => {
       latest.current.trace("play.rejected", { source, error_name: e?.name });
       if (e?.name !== "AbortError" && mounted.current && latest.current.active) {

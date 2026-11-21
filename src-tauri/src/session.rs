@@ -20,73 +20,6 @@ pub struct Session {
     pub user: serde_json::Value,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn credentials_are_bound_to_origin() {
-        let store = SessionStore::new();
-        store.set(
-            "https://huangguoai.com",
-            "secret-token".into(),
-            json!({"id": 1}),
-        );
-        assert_eq!(
-            store.token("https://huangguoai.com").as_deref(),
-            Some("secret-token")
-        );
-        assert_eq!(store.token("https://huangguoai.ai"), None);
-        assert_eq!(store.token("https://evil.example"), None);
-        assert!(store.user("https://evil.example").is_null());
-        store.clear();
-        assert_eq!(store.token("https://huangguoai.com"), None);
-    }
-
-    #[test]
-    fn legacy_sessions_are_not_assigned_to_current_line() {
-        let store = SessionStore::new();
-        *lock_state(&store.current) =
-            serde_json::from_str(r#"{"token":"legacy","user":{"id":1}}"#).unwrap();
-        assert_eq!(store.token("https://huangguoai.com"), None);
-        assert!(store.user("https://huangguoai.com").is_null());
-    }
-
-    #[test]
-    fn persists_atomically_with_restricted_permissions() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("hghub-session-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = SessionStore::new();
-        store.bind(dir.clone());
-        store.set(
-            "https://huangguoai.com",
-            "secret-token".into(),
-            json!({"id": 42}),
-        );
-        let session_path = dir.join("session.json");
-        assert!(session_path.exists());
-        assert!(!dir.join("session.json.tmp").exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&session_path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-        let reloaded = SessionStore::new();
-        reloaded.bind(dir.clone());
-        assert_eq!(
-            reloaded.token("https://huangguoai.com").as_deref(),
-            Some("secret-token")
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
 pub struct SessionStore {
     pub file: Mutex<Option<PathBuf>>,
     pub current: Mutex<Session>,
@@ -177,5 +110,72 @@ impl SessionStore {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn credentials_are_bound_to_origin() {
+        let store = SessionStore::new();
+        store.set(
+            "https://huangguoai.com",
+            "secret-token".into(),
+            json!({"id": 1}),
+        );
+        assert_eq!(
+            store.token("https://huangguoai.com").as_deref(),
+            Some("secret-token")
+        );
+        assert_eq!(store.token("https://huangguoai.ai"), None);
+        assert_eq!(store.token("https://evil.example"), None);
+        assert!(store.user("https://evil.example").is_null());
+        store.clear();
+        assert_eq!(store.token("https://huangguoai.com"), None);
+    }
+
+    #[test]
+    fn legacy_sessions_are_not_assigned_to_current_line() {
+        let store = SessionStore::new();
+        *lock_state(&store.current) =
+            serde_json::from_str(r#"{"token":"legacy","user":{"id":1}}"#).unwrap();
+        assert_eq!(store.token("https://huangguoai.com"), None);
+        assert!(store.user("https://huangguoai.com").is_null());
+    }
+
+    #[test]
+    fn persists_atomically_with_restricted_permissions() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hghub-session-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SessionStore::new();
+        store.bind(dir.clone());
+        store.set(
+            "https://huangguoai.com",
+            "secret-token".into(),
+            json!({"id": 42}),
+        );
+        let session_path = dir.join("session.json");
+        assert!(session_path.exists());
+        assert!(!dir.join("session.json.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&session_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let reloaded = SessionStore::new();
+        reloaded.bind(dir.clone());
+        assert_eq!(
+            reloaded.token("https://huangguoai.com").as_deref(),
+            Some("secret-token")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

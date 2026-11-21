@@ -81,8 +81,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   useEffect(() => () => {
     if (activeRef.current && fsRef.current) setFs(false);
   }, [setFs]);
-  const clean = store.clean;
-  const setClean = store.setClean;
 
   /* 追踪手机视口是否已处于物理/系统横屏状态（window.innerWidth > window.innerHeight） */
   const [vpLandscape, setVpLandscape] = useState(
@@ -90,14 +88,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   );
   const vpLandscapeRef = useRef(vpLandscape);
 
-  /* 单击清屏 vs 双击暂停计时器 */
-  const lastTapRef = useRef<{ time: number; timer: number | null }>({ time: 0, timer: null });
-  const clearTapTimer = () => {
-    if (lastTapRef.current.timer) {
-      window.clearTimeout(lastTapRef.current.timer);
-      lastTapRef.current.timer = null;
-    }
-  };
 
   /* 桌面：鼠标闲置 2.8s 自动隐藏播放器 UI（沉浸） */
   const [idle, setIdle] = useState(false);
@@ -278,7 +268,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   /* 进入 / 退出全屏：对横屏视频直接调用原生屏幕方向切换，让手机系统界面真正横过来 */
   const enterFs = useCallback(() => {
     keepPlayingThroughTransition();
-    setClean(false);
     setFs(true);
     if (isLandscapeVideo) {
       invoke("set_orientation", { landscape: true }).catch(() => {});
@@ -286,15 +275,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.("landscape")?.catch(() => {});
       } catch { /* ignore */ }
     }
-  }, [isLandscapeVideo, setClean, setFs, keepPlayingThroughTransition]);
+  }, [isLandscapeVideo, setFs, keepPlayingThroughTransition]);
 
   const exitFs = useCallback(() => {
     keepPlayingThroughTransition();
-    setClean(false);
     setFs(false);
     invoke("set_orientation", { landscape: false }).catch(() => {});
     try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
-  }, [setClean, setFs, keepPlayingThroughTransition]);
+  }, [setFs, keepPlayingThroughTransition]);
 
   /* 全屏状态下若视频宽高刚加载出来且为横屏，自动补发一次横屏指令 */
   useEffect(() => {
@@ -448,9 +436,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     setWaiting(false);
   }, [active, curId, curEp, playKey]);
 
-  /* 离开播放页时把最后位置落盘并清理计时器 */
+  /* 离开播放页时把最后位置落盘 */
   useEffect(() => () => {
-    clearTapTimer();
     const s = liveRef.current;
     if (s.id && s.dur) addHistory(s.id, s.ep, s.t, s.dur);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -477,7 +464,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
   /* —— 双指捏合缩放 & 平移（Pinch-to-Zoom & Pan） —— */
   const cancelSingleGesture = () => {
-    clearTapTimer();
     const g = gesture.current;
     if (g?.timer) window.clearTimeout(g.timer);
     gesture.current = null;
@@ -547,12 +533,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     }
   };
 
-  /* —— 长按 2x（上滑锁定） / 横拖定位 / 放大平移 / 单击清屏 / 双击暂停 —— */
+  /* —— 长按 2x（上滑锁定） / 横拖定位 / 放大平移 / 单击暂停或播放 —— */
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
     const el = e.currentTarget;
     const span = rotated ? (el.clientHeight || window.innerHeight || 1) : (el.clientWidth || 1);
-    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     const g = {
       x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
       t: Date.now(), base: time, width: span,
@@ -564,7 +549,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       timer: window.setTimeout(() => {
         const cur = gesture.current;
         if (!cur || cur.mode !== "idle" || pinchRef.current) return;
-        clearTapTimer();
         cur.mode = "hold";
         holdRef.current = true;
         setHoldSpeed(true);
@@ -601,15 +585,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
     if (g.mode === "idle") {
       if (g.zoomed && Math.hypot(dx, dy) > 6) {
-        clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "pan";
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       } else if (Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-        clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "scrub";
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       } else if (Math.abs(dy) > 16) {
-        clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "pan";
       }
@@ -674,23 +657,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
     if (cancelled || g.mode !== "idle") return;
     const moveDist = e ? Math.hypot(e.clientX - g.x, e.clientY - g.y) : 0;
-    if (Date.now() - g.t < 260 && moveDist < 16) {
-      const now = Date.now();
-      if (now - lastTapRef.current.time < 280) {
-        // 双击屏幕：切换暂停 / 播放
-        clearTapTimer();
-        lastTapRef.current.time = 0;
-        cancelKeepPlaying();
-        videoRef.current?.toggle();
-      } else {
-        // 单击屏幕：切换清屏模式（消除或恢复所有界面控件，只显示视频内容）
-        lastTapRef.current.time = now;
-        clearTapTimer();
-        lastTapRef.current.timer = window.setTimeout(() => {
-          lastTapRef.current.timer = null;
-          setClean((c) => !c);
-        }, 250) as unknown as number;
-      }
+    if (Date.now() - g.t < 380 && moveDist < 16) {
+      cancelKeepPlaying();
+      videoRef.current?.toggle();
     }
   };
 
@@ -931,7 +900,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                     onPointerMove={onMove}
                     onPointerUp={(e) => onUp(e, false)}
                     onPointerCancel={(e) => onUp(e, true)}
-                    onLostPointerCapture={(e) => onUp(e, true)}>
+                    onLostPointerCapture={(e) => { if (gesture.current && gesture.current.mode !== "idle") onUp(e, true); }}>
                     <VideoSurface
                       ref={videoRef}
                       src={playUrl}
@@ -1003,7 +972,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                   )}
 
                   {/* 移动端：倍速状态 / 锁定提示 */}
-                  {!isDesktop && (!clean || holdSpeed) && (holdSpeed || speedLock || rate !== 1) && (
+                  {!isDesktop && (holdSpeed || speedLock || rate !== 1) && (
                     <button
                       onClick={() => {
                         if (speedLock) { setSpeedLock(false); toast("已解除倍速锁定", "info"); }
@@ -1024,8 +993,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                     </div>
                   )}
 
-                  {/* 移动端：沉浸全屏控制栏（清屏 clean 模式下隐藏，单击屏幕可呼出/隐藏） */}
-                  {!isDesktop && activeFs && !clean && !controlsLocked && (
+                  {/* 移动端：沉浸全屏控制栏 */}
+                  {!isDesktop && activeFs && !controlsLocked && (
                     <>
                       <div className="absolute z-40 flex items-center gap-2"
                         style={{ top: fsTop, right: fsRight }}>
@@ -1126,14 +1095,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                 </div>
               )}
 
-              {/* 渐变压暗，保证文字可读（清屏模式下不加压暗遮罩，只显示纯视频内容） */}
-              {isActive && !activeFs && !clean && (
+              {/* 渐变压暗，保证文字可读 */}
+              {isActive && !activeFs && (
                 <div className="absolute inset-0 pointer-events-none"
                   style={{ background: "linear-gradient(0deg, rgba(8,11,15,.86) 0, rgba(11,14,20,.18) 26%, transparent 48%)" }} />
               )}
 
               {/* 竖屏下观看横屏视频：快捷「放大铺满 / 完整显示 / 全屏横屏」与双指缩放复位胶囊 */}
-              {isActive && !activeFs && !clean && !isDesktop && (isLandscapeVideo || zoom.scale > 1.05) && (
+              {isActive && !activeFs && !isDesktop && (isLandscapeVideo || zoom.scale > 1.05) && (
                 <div
                   className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
                   style={{ top: "64%" }}>
@@ -1176,7 +1145,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
               )}
 
               {/* 顶部 */}
-              {isActive && !activeFs && !clean && mode === "context" ? (
+              {isActive && !activeFs && mode === "context" ? (
                 isDesktop ? (
                   <div className="desktop-context-header">
                     <button onClick={onBack} aria-label="返回"><IBack size={17} /></button>
@@ -1194,7 +1163,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
               {/* 右侧操作栏（移动端）：点赞 / 收藏 / 评论 / 全屏 / 分享
                   颜色写死不跟主题走：浅色主题下这些字必须仍是白色 */}
-              {isActive && !activeFs && !clean && !isDesktop && (
+              {isActive && !activeFs && !isDesktop && (
                 <div className="absolute right-3 z-20 flex flex-col items-center gap-3.5"
                   style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 96}px)` }}>
                   {kind === "video" && (
@@ -1298,8 +1267,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
               </div>
               )}
 
-              {/* 移动端：标题 + 详情标签 + 进度线（清屏 clean 模式下隐藏） */}
-              {isActive && !activeFs && !clean && !isDesktop && (
+              {/* 移动端：标题 + 详情标签 + 进度线 */}
+              {isActive && !activeFs && !isDesktop && (
                 <div className="absolute inset-x-0 z-20" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
                   <div className="absolute inset-x-0 bottom-0 h-[190px] pointer-events-none"
                     style={{ background: "linear-gradient(0deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.42) 45%, transparent 100%)" }} />
@@ -1458,7 +1427,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         </>
       )}
       </div>
-      {!isDesktop && !activeFs && !clean && !controlsLocked && active && !panel && (
+      {!isDesktop && !activeFs && !controlsLocked && active && !panel && (
         <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
           <button onClick={() => setMuted(m => !m)} aria-label={muted ? "取消静音" : "静音"}
             className="hg-chip player-round-hit w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
