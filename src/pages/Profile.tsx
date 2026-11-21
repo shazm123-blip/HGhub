@@ -58,7 +58,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
-      {isIos ? <IosNavigation title="我的" action={<button aria-label="设置" onClick={() => push({ kind: "settings" })}><ISettings size={21} /></button>} /> : (
+      {isIos ? <IosNavigation title="我的" action={<button className="w-11 rounded-full bg-fill" aria-label="设置" onClick={() => push({ kind: "settings" })}><ISettings size={21} /></button>} /> : (
       <div className="shrink-0 px-4 pb-2 flex items-center" style={{ paddingTop: "calc(var(--sat, 0px) + 14px)" }}>
         <div className="text-[24px] font-bold text-on leading-none">我的</div>
         {isMobile && (
