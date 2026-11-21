@@ -749,3 +749,40 @@ html.plat-ios .hg-link, html.plat-macos .hg-link { color: #ffb340; }
 .ios-navigation.compact { background: var(--p-mat); box-shadow: inset 0 -.5px var(--p-sep); }
 .ios-navigation.compact h1 { position: absolute; bottom: 0; inset-inline: 76px; padding: 0; line-height: 44px; text-align: center; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .ios-back-edge { position: absolute; inset: calc(var(--sat) + 52px) auto var(--sab) 0; width: 16px; touch-action: pan-y; }
+
+/* iOS 内容控件 */
+html.plat-ios {
+  .group-heading { margin: 22px 0 7px 12px; font-size: 13px; font-weight: 500; color: var(--p-mut); }
+  .settings-group, .account-group, .library-group { border-radius: 14px; background: var(--p-s1); box-shadow: none; }
+  .settings-group > * { border-color: var(--p-fill); }
+  .settings-group > .flex { min-height: 54px; }
+  .settings-group .min-w-0 > .text-on { font-size: 16px; line-height: 1.3; }
+  .settings-group .min-w-0 > .text-mut { font-size: 13px; line-height: 1.35; margin-top: 2px; }
+  .settings-icon { width: 30px; height: 30px; color: white; border-radius: 8px; }
+  .library-group { padding: 12px; }
+  .account-group .text-mut { font-size: 13px; }
+  .setting-switch { width: 51px; height: 31px; background: var(--p-fill); }
+  .setting-switch[aria-checked=true] { background: #248a3d; }
+  .setting-switch span { top: 2px; left: 2px; width: 27px; height: 27px; background: white; box-shadow: 0 1px 4px #0004; }
+  .setting-switch[aria-checked=true] span { transform: translateX(20px); }
+  .segment-control { border-radius: 10px; padding: 3px; background: var(--p-fill); }
+  .segment-control button { font-size: 13px; height: 30px; border-radius: 7px; }
+  .segment-control :is([aria-checked=true], [aria-pressed=true]) { background: var(--p-s1) !important; color: var(--p-on) !important; box-shadow: 0 1px 4px #0003; }
+  .search-field { height: 38px; border-radius: 11px; background: var(--p-fill); }
+  .search-field input { width: 0; }
+  .sheet-surface, .modal-surface, .a-toast { background: var(--p-mat-thick); -webkit-backdrop-filter: saturate(160%) blur(24px); backdrop-filter: saturate(160%) blur(24px); }
+  .sheet-surface { --r-lg: 24px; max-height: calc(100dvh - var(--sat)); overflow-y: auto; }
+  .modal-surface { border-radius: 18px; }
+  .confirm-alert { padding: 20px 0 0; text-align: center; }
+  .confirm-alert > div:first-child { font-size: 17px; }
+  .confirm-alert p { padding-inline: 18px; font-size: 13px; }
+  .confirm-alert > div:last-child { gap: 0; border-top: .5px solid var(--p-sep); }
+  .confirm-alert button { height: 46px; background: transparent; border-radius: 0; font-size: 16px; color: var(--p-on); }
+  .confirm-alert button:last-child { color: var(--p-danger); border-left: .5px solid var(--p-sep); }
+  .a-toast { border-radius: 99px; padding: 12px 18px; }
+  .cover-frame { border-radius: 12px; }
+  .cover-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; border: .5px solid #8885; border-radius: inherit; }
+  .cover-frame > span, .cover-frame > .truncate { border-radius: 99px; font-size: 11px; }
+  .row-cover { width: 116px; }
+  .cover-title, .cover-frame .clamp-2 { font-size: 14px; font-weight: 600; }
+}

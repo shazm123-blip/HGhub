@@ -72,7 +72,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       <div className="flex-1 scroll-y px-4 pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
         {/* 资料卡：已登录 / 未登录（点开登录抽屉） */}
         {user ? (
-          <div className="rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 a-rise">
+          <div className="account-group rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 a-rise">
             <Avatar size={56} name={user.nickname} hue={280} ring />
             <div className="flex-1 min-w-0">
               <div className="text-[16px] font-bold text-on truncate">{user.nickname}</div>
@@ -90,7 +90,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
           </div>
         ) : (
           <button onClick={() => setLoginOpen(true)}
-            className="w-full text-left rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 pressable a-rise">
+            className="w-full text-left account-group rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 pressable a-rise">
             <Avatar size={56} icon={<IUser size={26} />} hue={220} ring />
             <div className="flex-1 min-w-0">
               <div className="text-[16px] font-bold text-on">未登录</div>
@@ -107,15 +107,15 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
         )}
 
         {/* 我的内容 */}
-        <div className="flex bg-s3 rounded-(--r-ctl) p-1 mt-4">
+        <div className="segment-control flex bg-s3 rounded-(--r-ctl) p-1 mt-4">
           {([["fav", "我的收藏"], ["history", "观看历史"]] as const).map(([k, l]) => (
-            <button key={k} onClick={() => setTab(k)}
+            <button aria-pressed={tab === k} key={k} onClick={() => setTab(k)}
               className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${tab === k ? "tonal text-on-sec" : "text-mut"}`}
               style={tab === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{l}</button>
           ))}
         </div>
 
-        <div className="mt-3">
+        <div className="library-group mt-3">
           {loading && !cards.length ? (
             <div className="flex justify-center py-8"><div className="w-7 h-7 spinner" /></div>
           ) : cards.length ? (
@@ -129,7 +129,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
                   startEp: p?.ep, startTime: p?.t,
                   covers: Object.fromEntries(cards.map((x) => [x.id, x.cover])),
                 })}
-                  className="relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable text-left">
+                  className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable text-left">
                   <Img src={c.cover} />
                   {!!p && (
                     <div className="absolute top-1.5 left-1.5 max-w-[calc(100%-12px)] truncate px-1.5 py-0.5 rounded-full bg-black/65 text-[9.5px] text-white/90 leading-none">
@@ -164,7 +164,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       </div>
 
       <Modal open={confirmClear} onClose={() => setConfirmClear(false)} width={320}>
-        <div className="p-5">
+        <div className="confirm-alert p-5">
           <div className="text-[14.5px] font-bold text-on">清空观看历史</div>
           <p className="text-[12px] text-mut leading-relaxed mt-2">确定要清除全部观看记录与续播进度吗？此操作不可撤销。</p>
           <div className="flex gap-2 mt-5">

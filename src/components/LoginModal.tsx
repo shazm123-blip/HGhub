@@ -44,9 +44,9 @@ export default function LoginModal() {
         </button>
       </div>
 
-      <div className="flex bg-s4 rounded-(--r-ctl) p-1 mb-3">
+      <div className="segment-control flex bg-s4 rounded-(--r-ctl) p-1 mb-3">
         {([["login", "登录"], ["register", "注册"]] as const).map(([k, l]) => (
-          <button key={k} onClick={() => { setMode(k); setErr(""); }}
+          <button aria-pressed={mode === k} key={k} onClick={() => { setMode(k); setErr(""); }}
             className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${mode === k ? "bg-primary text-on-primary" : "text-mut"}`}>{l}</button>
         ))}
       </div>

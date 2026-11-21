@@ -12,6 +12,7 @@ const HOT_TAGS = ["都市", "逆袭", "古风", "系统", "后宫", "校园", "�
 export default function Search({ active, wide }: { active: boolean; wide: boolean }) {
   const { push, searchHist, addSearch, clearSearchHist } = useStore();
   const [q, setQ] = useState("");
+  const [editing, setEditing] = useState(false);
   const [submitted, setSubmitted] = useState("");
   const [items, setItems] = useState<VideoCard[]>([]);
   const [page, setPage] = useState(0);
@@ -73,23 +74,35 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
     void run(k, 1);
   };
 
+  function cancelSearch() {
+    reqSeq.current++;
+    busy.current = false;
+    setLoading(false);
+    setErr(null);
+    setQ("");
+    setSubmitted("");
+    setItems([]);
+    setEditing(false);
+    inputRef.current?.blur();
+  }
+
   const querying = submitted.length > 0;
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
       {isIos && <IosNavigation title="搜索" />}
       <div className="shrink-0 px-4 pb-3 flex items-center gap-2.5" style={{ paddingTop: isIos ? 4 : "calc(var(--sat, 0px) + 12px)" }}>
-        <form className="flex-1 flex items-center gap-2 h-11 rounded-(--r-ctl) bg-s3 px-3.5 focus-within:bg-s4 transition-colors"
+        <form className="search-field min-w-0 flex-1 flex items-center gap-2 h-11 rounded-(--r-ctl) bg-s3 px-3.5 focus-within:bg-s4 transition-colors"
           onSubmit={(e) => { e.preventDefault(); submit(q); }}>
           <ISearch size={17} className="text-mut shrink-0" />
-          <input ref={inputRef} type="search" enterKeyHint="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索短剧、作者、题材…"
+          <input ref={inputRef} onFocus={() => { if (isIos) setEditing(true); }} type="search" enterKeyHint="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索短剧、作者、题材…"
             className={`flex-1 min-w-0 bg-transparent ${isMobile ? "text-[16px]" : "text-[13.5px]"} text-on placeholder-dim outline-none`} />
           {q && <button type="button" aria-label="清除搜索" onClick={() => { setQ(""); setSubmitted(""); setItems([]); }} className="shrink-0 w-7 h-7 rounded-full bg-s4 flex items-center justify-center text-mut pressable"><IClose size={12} /></button>}
         </form>
-        <button onClick={() => push({ kind: "ranks" })} aria-label="排行榜"
+        {isIos && (editing || querying) ? <button onClick={cancelSearch} className="h-11 text-primary text-[16px]">取消</button> : <button onClick={() => push({ kind: "ranks" })} aria-label="排行榜"
           className="shrink-0 w-11 h-11 rounded-(--r-sm) flex items-center justify-center bg-primary text-on-primary pressable elev-2">
           <ITrophy size={19} />
-        </button>
+        </button>}
       </div>
 
       <div className="flex-1 scroll-y px-4" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
@@ -219,9 +232,9 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
             </div>
           </div>
           </>}
-          <div className="flex bg-s3 rounded-(--r-ctl) p-1 mt-3">
+          <div className="segment-control flex bg-s3 rounded-(--r-ctl) p-1 mt-3">
             {RANK_TABS.map((t) => (
-              <button key={t.k} onClick={() => setTab(t.k)}
+              <button aria-pressed={tab === t.k} key={t.k} onClick={() => setTab(t.k)}
                 className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold transition-all ${tab === t.k ? "tonal elev-1" : "text-mut"}`}
                 style={tab === t.k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{t.label}</button>
             ))}

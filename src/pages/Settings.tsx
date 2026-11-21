@@ -9,8 +9,8 @@ import { IBack, IBoltF, IBroom, IChevR, IHeart, IInfo, ILink, ILockF, IMoon, IRe
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
   <>
-    <div className="text-[10.5px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
-    <div className="rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
+    <div className="group-heading text-[10.5px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
+    <div className="settings-group rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
   </>
 );
 
@@ -72,7 +72,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
         <div className={wide ? "max-w-[720px] mx-auto" : ""}>
           <Section title="外观">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
+              <span style={isIos ? { backgroundColor: "#6555ad" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">{isApple ? "外观" : "深色外观"}</div>
                 <div className="text-[10.5px] text-mut">{isApple ? (themePref === "system" ? `跟随系统 · 当前${theme === "dark" ? "深色" : "浅色"}` : "已固定外观") : "跟随设计稿的 Fluent 深色"}</div>
@@ -81,7 +81,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
             </div>
             {isApple && (
               <div className="px-3.5 pb-3 -mt-1">
-                <div role="radiogroup" aria-label="外观" className="flex p-[2px] rounded-[9px] bg-fill">
+                <div role="radiogroup" aria-label="外观" className="segment-control flex p-[2px] rounded-[9px] bg-fill">
                   {([["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]] as const).map(([k, label]) => (
                     <button key={k} role="radio" aria-checked={themePref === k} onClick={() => setThemePref(k)}
                       className={`flex-1 h-[30px] rounded-[7px] t-footnote transition-all duration-200 ${themePref === k ? "bg-s1 text-on font-semibold shadow-[0_3px_8px_rgba(0,0,0,.12),0_3px_1px_rgba(0,0,0,.04)]" : "text-on/80"}`}>
@@ -95,7 +95,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="播放">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#cf5933" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">启动时静音</div>
                 <div className="text-[10.5px] text-mut">默认开启，每次启动均静音；关闭后记住上次静音状态。下次启动生效。</div>
@@ -106,14 +106,14 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="本地数据">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#c53c64" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">本地喜欢</div>
                 <div className="text-[10.5px] text-mut">{favs.length} 部收藏 · {history.length} 条观看记录</div>
               </div>
             </div>
             <button onClick={() => setClearOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#727783" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">清理缓存</div>
                 <div className="text-[10.5px] text-mut">解密图 / m3u8 / 密钥与分片内存缓存</div>
@@ -124,7 +124,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="网络">
             <button onClick={() => setLineOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#208361" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">线路</div>
                 <div className="text-[10.5px] text-mut truncate">{lineBase ? hostOf(lineBase) : "固定线路 1（默认）"}</div>
@@ -132,7 +132,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
+              <span style={isIos ? { backgroundColor: "#3874b3" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">严格安全模式</div>
                 <div className="text-[10.5px] text-mut">
@@ -164,7 +164,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
                 toast((e as Error).message || "诊断失败", "info");
               }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#23769d" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">网络诊断</div>
                 <div className="text-[10.5px] text-mut">检测 DNS / 系统代理 / 官网连通性</div>
@@ -175,7 +175,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="播放诊断">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#3874b3" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">播放诊断日志</div>
                 <div className="text-[10.5px] text-mut">记录点击、拖动、切页和缓冲过程；复现问题后可关闭并复制日志</div>
@@ -190,7 +190,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               catch (e) { toast((e as Error).message || "复制日志失败", "info"); }
               finally { setCopyingLog(false); }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#23769d" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
                 <div className="text-[10.5px] text-mut break-all">{playbackLog.path || "日志仅保存在本机"}</div>
@@ -201,7 +201,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="其他">
             <button onClick={checkUpdate} disabled={checking} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#61804a" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">检查更新</div>
                 <div className="text-[10.5px] text-mut">{checking ? "检查中…" : `当前 v${APP_VERSION} · 对比 GitHub Release`}</div>
@@ -209,7 +209,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <button onClick={() => setAbout(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <span style={isIos ? { backgroundColor: "#646a74" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[12.5px] text-on">关于 HGhub</div>
                 <div className="text-[10.5px] text-mut">版本 {APP_VERSION} · 仅限非商业使用</div>
@@ -269,7 +269,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
       </Modal>
 
       <Modal open={clearOpen} onClose={() => setClearOpen(false)} width={330}>
-        <div className="p-5">
+        <div className="confirm-alert p-5">
           <div className="text-[14.5px] font-bold text-on">清理缓存</div>
           <p className="text-[12px] text-mut leading-relaxed mt-2">
             只清除封面、播放列表、密钥与分片内存缓存。收藏、观看记录、搜索历史与登录状态都会保留。

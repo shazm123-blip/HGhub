@@ -74,7 +74,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
           <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
             {items.map((p) => (
               <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
+                className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
                 <Img src={p.cover} />
                 <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-2">

@@ -167,13 +167,13 @@ export default function Category({ wide: _wide, active }: { wide: boolean; activ
           <div className="scroll-x scroll-pl-4 flex gap-2.5 px-4 snap-x">
             {posts.map((post) => (
               <button key={post.id} onClick={() => push({ kind: "post", id: post.id })}
-                className="w-[104px] shrink-0 text-left snap-start pressable">
-                <div className="relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
+                className="row-cover w-[104px] shrink-0 text-left snap-start pressable">
+                <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
                   <Img src={post.cover} eager />
                   <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
                   <span className="absolute bottom-1.5 right-1.5 text-[9px] font-semibold text-white/90 tsh">{fmt(post.hot)}</span>
                 </div>
-                <div className="mt-1.5 text-[11.5px] font-medium text-on clamp-1 leading-tight">{post.title}</div>
+                <div className="cover-title mt-1.5 text-[11.5px] font-medium text-on clamp-1 leading-tight">{post.title}</div>
               </button>
             ))}
             {!posts.length && <PreviewStatus name="黄果吃瓜" loading={loading.posts !== false} error={errors.posts} onRetry={() => void loadPreview("posts")} />}
@@ -308,9 +308,9 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
             <IRefresh size={16} className={refreshing ? "animate-spin" : ""} />
           </button>
         </div>
-        <div className="px-4 pb-3 flex gap-2">
+        <div className={isIos ? "segment-control flex mx-4 mb-3" : "px-4 pb-3 flex gap-2"}>
           {(["最新", "最热", "高分"] as const).map((s) => (
-            <button key={s} onClick={() => { setSort(s); listRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
+            <button aria-pressed={sort === s} key={s} onClick={() => { setSort(s); listRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={`px-4 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${sort === s ? "tonal text-on-sec" : "bg-s3 text-mut"}`}
               style={sort === s ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{s}</button>
           ))}

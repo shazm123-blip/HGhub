@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cover } from "../api";
+import { cover, isIos } from "../api";
 import { pushBackHandler } from "../back";
 import { useStore } from "../store";
 import { ICheck, IHeartF, ISparkF, IStarF } from "../icons";
@@ -41,7 +41,7 @@ export function Sheet({ open, onClose, children, z = "z-50" }: { open: boolean; 
         style={{ background: "rgba(0,0,0,.55)", touchAction: "none" }}
         onTouchMove={(e) => e.stopPropagation()}
         onClick={onClose} />
-      <div className={`absolute bottom-0 inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
+      <div className={`sheet-surface absolute bottom-0 inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
         style={{ paddingBottom: "var(--sab, 0px)", borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
         <div className="pt-3 pb-1 flex justify-center"><div className="w-8 h-1 rounded-full bg-dim/70" /></div>
         {children}
@@ -71,7 +71,7 @@ export function Modal({ open, onClose, children, width = 340 }: { open: boolean;
         style={{ touchAction: "none" }}
         onTouchMove={(e) => e.stopPropagation()}
         onClick={onClose} />
-      <div className={`relative bg-s3 rounded-(--r-lg) elev-3 scroll-y ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`}
+      <div className={`modal-surface relative bg-s3 rounded-(--r-lg) elev-3 scroll-y ${open ? "a-scale-in" : "opacity-0 scale-90 transition-all"}`}
         style={{ width, maxWidth: "100%", maxHeight: "calc(100dvh - var(--sat, 0px) - var(--sab, 0px) - 32px)" }}>
         {children}
       </div>
@@ -82,8 +82,8 @@ export function Modal({ open, onClose, children, width = 340 }: { open: boolean;
 /* ——— 开关 ——— */
 export function Toggle({ on, onChange, label, disabled = false }: { on: boolean; onChange: (b: boolean) => void; label?: string; disabled?: boolean }) {
   return (
-    <button disabled={disabled} onClick={() => onChange(!on)} aria-pressed={on} aria-label={label}
-      className={`relative shrink-0 w-[46px] h-[26px] rounded-full transition-colors duration-200 disabled:opacity-50 disabled:cursor-wait ${on ? "bg-primary" : "bg-s4"}`}>
+    <button disabled={disabled} onClick={() => onChange(!on)} role={isIos ? "switch" : undefined} aria-checked={isIos ? on : undefined} aria-pressed={isIos ? undefined : on} aria-label={label}
+      className={`setting-switch relative shrink-0 w-[46px] h-[26px] rounded-full transition-colors duration-200 disabled:opacity-50 disabled:cursor-wait ${on ? "bg-primary" : "bg-s4"}`}>
       <span className={`absolute top-[3px] w-5 h-5 rounded-full elev-1 transition-all duration-200 ${on ? "left-[23px] bg-on-primary" : "left-[3px] bg-mut"}`} />
     </button>
   );
@@ -109,7 +109,7 @@ export function Empty({ icon, title, sub, action, onAction }: {
 export function ToastHost() {
   const { toasts } = useStore();
   return (
-    <div className="absolute inset-x-0 z-[80] flex flex-col items-center gap-2 pointer-events-none px-6" style={{ bottom: "calc(var(--sab, 0px) + 96px)" }}>
+    <div aria-live="polite" className="absolute inset-x-0 z-[80] flex flex-col items-center gap-2 pointer-events-none px-6" style={{ bottom: "calc(var(--sab, 0px) + 96px)" }}>
       {toasts.map((t) => (
         <div key={t.id} className="a-toast pointer-events-auto flex items-center gap-2.5 max-w-full bg-s4/95 backdrop-blur-md rounded-(--r-sm) pl-3.5 pr-4 py-2.5 elev-3">
           {t.icon === "ok" && <ICheck size={16} className="text-mint shrink-0" />}

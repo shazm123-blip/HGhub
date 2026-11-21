@@ -7,7 +7,7 @@ import { Img } from "./ui";
 export function WaterfallCard({ v, onOpen, eager = false }: { v: VideoCard; onOpen: () => void; eager?: boolean }) {
   return (
     <button onClick={onOpen}
-      className="relative w-full aspect-[100/132] overflow-hidden text-left bg-s1 elev-1 pressable block rounded-(--r-sm)">
+      className="cover-frame relative w-full aspect-[100/132] overflow-hidden text-left bg-s1 elev-1 pressable block rounded-(--r-sm)">
       <Img src={v.cover} eager={eager} />
       <div className="absolute inset-x-0 bottom-0 h-3/5 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
       <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold brand-grad elev-1">
@@ -17,7 +17,7 @@ export function WaterfallCard({ v, onOpen, eager = false }: { v: VideoCard; onOp
         <IPlayF size={9} />{fmt(v.hot)}
       </span>
       <div className="absolute inset-x-0 bottom-0 p-2">
-        <div className="text-[11.5px] font-medium text-white leading-snug clamp-2 tsh">{v.title}</div>
+        <div className="cover-title text-[11.5px] font-medium text-white leading-snug clamp-2 tsh">{v.title}</div>
         <div className="flex items-center justify-between mt-1">
           <span className="text-[9.5px] text-white/65 truncate max-w-[60%]">{v.author?.name || "黄果短剧"}</span>
           <span className="flex items-center gap-0.5 text-[9.5px] text-white/75"><IHeartF size={10} className="text-white/70" />{fmt(v.like_count)}</span>
@@ -43,8 +43,8 @@ export function Masonry({ videos, onOpen, wide = false, gap = "gap-1" }: {
 /* ——— 分类横向卡片 ——— */
 export function RowCard({ v, onOpen }: { v: VideoCard; onOpen: () => void }) {
   return (
-    <button onClick={onOpen} className="w-[104px] shrink-0 text-left snap-start pressable group">
-      <div className="relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
+    <button onClick={onOpen} className="row-cover w-[104px] shrink-0 text-left snap-start pressable group">
+      <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
         <Img src={v.cover} eager />
         <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
         <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md text-[8.5px] font-bold brand-grad">
@@ -52,7 +52,7 @@ export function RowCard({ v, onOpen }: { v: VideoCard; onOpen: () => void }) {
         </span>
         <span className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5 text-[9px] font-semibold text-white/90 tsh"><IPlayF size={9} />{fmt(v.hot)}</span>
       </div>
-      <div className="mt-1.5 text-[11.5px] font-medium text-on clamp-1 leading-tight">{v.title}</div>
+      <div className="mt-1.5 cover-title text-[11.5px] font-medium text-on clamp-1 leading-tight">{v.title}</div>
       <div className="text-[10px] text-mut clamp-1 mt-0.5">{v.tags?.slice(0, 2).join(" · ")}</div>
     </button>
   );
@@ -69,7 +69,7 @@ export function RankRow({ item, onOpen, metricMax }: {
       className={`w-full flex items-center gap-3 p-2.5 rounded-(--r-md) text-left mb-2 pressable a-rise ${i < 3 ? "bg-s3" : "bg-s2"}`}
       style={{ animationDelay: `${Math.min(i * 35, 300)}ms` }}>
       <span className={`w-7 h-7 rounded-full flex items-center justify-center text-[13px] font-bold shrink-0 tabular-nums ${i === 0 ? "bg-primary text-on-primary" : i < 3 ? "tonal" : "text-dim"}`}>{item.rank}</span>
-      <div className="relative w-[52px] h-[68px] rounded-lg overflow-hidden bg-s3 shrink-0">
+      <div className="cover-frame relative w-[52px] h-[68px] rounded-lg overflow-hidden bg-s3 shrink-0">
         <Img src={item.cover} eager={i < 12} />
       </div>
       <div className="flex-1 min-w-0">
