@@ -5,6 +5,7 @@ import { pushBackHandler } from "../back";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 import { useSeekInput } from "../useSeekInput";
+import { computeScrubTarget, formatScrubDelta } from "../scrubGesture";
 import PlaybackLock from "./PlaybackLock";
 import { ICompress, IExpand, ILockF, IPauseF, IPlayF, IVol, IVolMute } from "../icons";
 
@@ -63,23 +64,42 @@ export default function Player({
     hideControlsTimerRef.current = window.setTimeout(() => setControlsShown(false), 3000);
   };
 
+  const [scrub, setScrub] = useState<{ pct: number; target: number; delta: number } | null>(null);
+  const scrubTargetRef = useRef<number | null>(null);
+  const suppressClickUntilRef = useRef(0);
+  const dragRef = useRef<{
+    id: number; x: number; y: number; base: number; width: number;
+    playing: boolean; scrubbing: boolean; startDx: number;
+  } | null>(null);
+
   useEffect(() => () => {
     if (hideControlsTimerRef.current) window.clearTimeout(hideControlsTimerRef.current);
   }, []);
-  const seek = useSeekInput({ time, duration, enabled: active && !controlsLocked, resetKey: src,
+
+  useEffect(() => {
+    if (!active || controlsLocked) {
+      dragRef.current = null;
+      scrubTargetRef.current = null;
+      setScrub(null);
+    }
+  }, [active, controlsLocked]);
+
+  const applySeek = (target: number, source: string) => {
+    const video = videoRef.current;
+    if (!video || !activity.isActive()) return;
+    requestSeek(target, source);
+    setWaiting(true);
+    if (hlsRef.current && !hlsRef.current.loadingEnabled) {
+      try { hlsRef.current.startLoad(target); } catch { /* ignore */ }
+    }
+    video.currentTime = target;
+    trace("seek.assigned", { target, source });
+    setTime(target);
+  };
+
+  const seek = useSeekInput({ time: scrub ? scrub.target : time, duration, enabled: active && !controlsLocked, resetKey: src,
     onInteraction: (phase, input, target, pointerTarget) => trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
-    onSeek: (target, input) => {
-      const video = videoRef.current;
-      if (!video || !activity.isActive()) return;
-      requestSeek(target, `legacy_${input}`);
-      setWaiting(true);
-      if (hlsRef.current && !hlsRef.current.loadingEnabled) {
-        try { hlsRef.current.startLoad(target); } catch { /* ignore */ }
-      }
-      video.currentTime = target;
-      trace("seek.assigned", { target });
-      setTime(video.currentTime);
-    },
+    onSeek: (target, input) => applySeek(target, `legacy_${input}`),
   });
 
   useEffect(() => {
@@ -206,7 +226,66 @@ export default function Player({
   };
 
   const onVideoClick = () => {
+    if (Date.now() < suppressClickUntilRef.current) return;
     toggle();
+  };
+
+  const onStageDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (!active || controlsLocked || !e.isPrimary || e.button !== 0 || dragRef.current) return;
+    const width = e.currentTarget.clientWidth || wrapRef.current?.clientWidth || 390;
+    dragRef.current = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      base: time,
+      width,
+      playing: videoRef.current?.paused === false,
+      scrubbing: false,
+      startDx: 0,
+    };
+  };
+
+  const onStageMove = (e: React.PointerEvent<HTMLElement>) => {
+    const g = dragRef.current;
+    if (!g || g.id !== e.pointerId || !e.isPrimary) return;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    if (!g.scrubbing) {
+      if (duration > 0 && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        g.scrubbing = true;
+        g.startDx = dx;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+        showControlsTemporarily();
+        const res = computeScrubTarget(g.base, 0, g.width, duration);
+        scrubTargetRef.current = res.target;
+        setScrub(res);
+      } else if (Math.abs(dy) > 16) {
+        dragRef.current = null;
+      }
+      return;
+    }
+    if (!duration) return;
+    showControlsTemporarily();
+    const res = computeScrubTarget(g.base, dx - g.startDx, g.width, duration);
+    scrubTargetRef.current = res.target;
+    setScrub(res);
+  };
+
+  const onStageUp = (e: React.PointerEvent<HTMLElement>, cancelled = false) => {
+    const g = dragRef.current;
+    if (!g || g.id !== e.pointerId) return;
+    dragRef.current = null;
+    if (!g.scrubbing) return;
+    const target = scrubTargetRef.current;
+    scrubTargetRef.current = null;
+    setScrub(null);
+    suppressClickUntilRef.current = Date.now() + 250;
+    if (!cancelled && target != null) {
+      applySeek(target, "drag_gesture");
+    }
+    if (!cancelled && g.playing && active && !controlsLocked) {
+      activity.play("drag_seek_resume", true);
+    }
   };
 
   const cycleRate = () => {
@@ -228,7 +307,8 @@ export default function Player({
     else el.requestFullscreen().catch(() => { setCssFull((v) => !v); });
   };
 
-  const pct = duration > 0 ? (seek.time / duration) * 100 : 0;
+  const shownTime = scrub ? scrub.target : seek.time;
+  const pct = duration > 0 ? (shownTime / duration) * 100 : 0;
 
   return (
     <div ref={wrapRef} className={cssFull ? "fixed inset-0 z-50 bg-black overflow-hidden group" : `relative bg-black overflow-hidden group ${className}`}>
@@ -241,7 +321,13 @@ export default function Player({
         preload="auto"
         muted={muted}
         loop={loop}
-        className="w-full h-full object-contain bg-black"
+        style={{ touchAction: cssFull ? "none" : "pan-y" }}
+        className={`w-full h-full object-contain bg-black select-none ${!isMobile && scrub ? "cursor-ew-resize" : ""}`}
+        onPointerDown={onStageDown}
+        onPointerMove={onStageMove}
+        onPointerUp={(e) => onStageUp(e, false)}
+        onPointerCancel={(e) => onStageUp(e, true)}
+        onLostPointerCapture={(e) => { if (dragRef.current?.scrubbing) onStageUp(e, true); }}
         onClick={onVideoClick}
         onCanPlay={() => setWaiting(false)}
         onPlay={() => { if (activity.isActive()) { setPlaying(true); onTogglePlay?.(true); } }}
@@ -260,6 +346,18 @@ export default function Player({
         onEnded={() => { if (activity.isActive()) onEnded?.(); }}
       />
 
+      {scrub && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none" style={{ background: "rgba(0,0,0,.22)" }}>
+          <div className="px-4 py-2.5 rounded-2xl backdrop-blur-md flex flex-col items-center" style={{ background: "rgba(0,0,0,.58)" }}>
+            <div className="flex items-baseline gap-1.5 tabular-nums">
+              <span className="text-[22px] font-bold text-white">{fmtTime(scrub.target)}</span>
+              <span className="text-[12px] text-white/65">/ {fmtTime(duration)}</span>
+            </div>
+            <span className="mt-0.5 text-[11.5px] font-semibold text-white/85 tabular-nums">{formatScrubDelta(scrub.delta)}</span>
+          </div>
+        </div>
+      )}
+
       {errMsg && (
         <div
           className="absolute left-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[10px] leading-tight text-red-300 break-all"
@@ -274,13 +372,16 @@ export default function Player({
         </div>
       )}
 
-      {!playing && !waiting && (
-        <button onClick={toggle} aria-label="播放"
-          className="absolute inset-0 flex items-center justify-center">
-          <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
+      {!playing && !waiting && !scrub && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={toggle}
+            aria-label="播放"
+            className="pointer-events-auto w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
             <IPlayF size={26} className="text-white ml-0.5" />
-          </span>
-        </button>
+          </button>
+        </div>
       )}
 
       {controls && (

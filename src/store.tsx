@@ -146,6 +146,7 @@ type Store = {
   searchHist: string[]; addSearch: (q: string) => void; clearSearchHist: () => void;
   strictSecurity: boolean; strictSecurityReady: boolean; securityPending: boolean; cliRelaxed: boolean; setStrictSecurity: (on: boolean) => Promise<void>;
   lineVersion: number; bumpLineVersion: () => void;
+  homeRefresh: number; bumpHomeRefresh: () => void;
   toasts: Toast[]; toast: (msg: string, icon?: Toast["icon"]) => void;
 };
 
@@ -176,8 +177,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [strictSecurityReady, setStrictSecurityReady] = useState(false);
   const [securityPending, setSecurityPending] = useState(false);
   const [lineVersion, setLineVersion] = useState(0);
+  const [homeRefresh, setHomeRefresh] = useState(0);
   const toastSeq = useRef(0);
   const bumpLineVersion = useCallback(() => setLineVersion((v) => v + 1), []);
+  const bumpHomeRefresh = useCallback(() => setHomeRefresh((v) => v + 1), []);
 
   useEffect(() => {
     if (!darkQuery) return undefined;
@@ -367,11 +370,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     searchHist: p.searchHist, addSearch, clearSearchHist,
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
     lineVersion, bumpLineVersion,
+    homeRefresh, bumpHomeRefresh,
     toasts, toast,
   }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, loginOpen, logout,
     p, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, addHistory, clearHistory,
     setMuted, setMuteOnStartup, setVolume, addSearch, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    lineVersion, bumpLineVersion, toasts, toast, theater, setTheater, fs, setFs]);
+    lineVersion, bumpLineVersion, homeRefresh, bumpHomeRefresh, toasts, toast, theater, setTheater, fs, setFs]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

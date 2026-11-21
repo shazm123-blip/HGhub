@@ -20,7 +20,11 @@ import { tracePlayback } from "./playbackDiagnostics";
 
 /* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
 function TabBar() {
-  const { tab, setTab, theme, platform } = useStore();
+  const { tab, setTab, stack, bumpHomeRefresh, theme, platform } = useStore();
+  const pickTab = (k: Tab) => {
+    if (k === "home" && tab === "home" && stack.length === 0) bumpHomeRefresh();
+    else setTab(k);
+  };
   const items: { k: Tab; label: string }[] = [
     { k: "home", label: "首页" },
     { k: "search", label: "搜索" },
@@ -38,7 +42,7 @@ function TabBar() {
       {items.map(({ k, label }) => {
         const selected = k === tab;
         const Icon = icons[k][selected ? 1 : 0];
-        return <button key={k} aria-current={selected ? "page" : undefined} onClick={() => setTab(k)}>
+        return <button key={k} aria-current={selected ? "page" : undefined} onClick={() => pickTab(k)}>
           <Icon size={23} /><span>{label}</span>
         </button>;
       })}
@@ -56,7 +60,7 @@ function TabBar() {
         {items.map(({ k, label }) => {
           const on = tab === k;
           return (
-            <button key={k} onClick={() => setTab(k)} className="flex-1 h-full flex items-center justify-center pressable">
+            <button key={k} onClick={() => pickTab(k)} className="flex-1 h-full flex items-center justify-center pressable">
               <span className="text-[12.5px] leading-none transition-colors duration-200"
                 style={{
                   fontWeight: on ? 700 : 400,

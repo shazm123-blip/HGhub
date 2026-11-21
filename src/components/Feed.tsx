@@ -9,9 +9,10 @@ import PlayerControls from "./PlayerControls";
 import PlaybackLock from "./PlaybackLock";
 import { ArticlePanel, CommentsPanel, EpisodesPanel } from "./Panels";
 import { pushBackHandler } from "../back";
+import { computeScrubTarget, formatScrubDelta } from "../scrubGesture";
 import {
   IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IFileText, IHeart, IHeartF,
-  ILink, IList, ILockF, IPauseF, IPlayF, ISearch, IStar, IStarF, IVol, IVolMute,
+  ILink, IList, ILockF, INext, IPauseF, IPlayF, ISearch, IStar, IStarF, IVol, IVolMute,
 } from "../icons";
 
 type Props = {
@@ -24,13 +25,14 @@ type Props = {
   bottomInset: number;
   onBack?: () => void;
   onNearEnd?: () => void;
+  onView?: (id: number) => void;
   /** 从观看记录续播：起始集数与秒数 */
   startEp?: number;
   startTime?: number;
   initialCovers?: Record<number, string>;
 };
 
-export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind = "video", active, bottomInset, onBack, onNearEnd, startEp, startTime, initialCovers }: Props) {
+export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind = "video", active, bottomInset, onBack, onNearEnd, onView, startEp, startTime, initialCovers }: Props) {
   const store = useStore();
   const { isLiked, isFav, toggleLikeLocal, toggleFavLocal, toggleFollowLocal, muted, setMuted, volume, setVolume, toast, addHistory, user } = store;
   const isDesktop = !isMobile;
@@ -113,8 +115,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const [lockArmed, setLockArmed] = useState(false);
   const holdRef = useRef(false);
   const lockArmedRef = useRef(false);
-  const [scrub, setScrub] = useState<{ pct: number; target: number } | null>(null);
+  const [scrub, setScrub] = useState<{ pct: number; target: number; delta: number } | null>(null);
   const scrubTarget = useRef<number | null>(null);
+  const suppressClickUntilRef = useRef(0);
   /* 竖屏下横屏视频适应模式 + 双指无级缩放/平移 */
   const [portraitFit, setPortraitFit] = useState<"contain" | "cover">("contain");
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0, gesturing: false });
@@ -129,7 +132,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const gesture = useRef<{
     x: number; y: number; startX: number; startY: number; t: number; timer: number | null;
     mode: "idle" | "hold" | "scrub" | "pan"; base: number; width: number; playing: boolean;
-    zoomed: boolean; zoomX: number; zoomY: number;
+    zoomed: boolean; zoomX: number; zoomY: number; scrubStartDx: number;
   } | null>(null);
 
   const curId = videoIds[safeIndex];
@@ -140,6 +143,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const post = posts[curId];
   const playUrl = kind === "post" ? (post?.video_url || "") : (playUrls[playKey] || "");
   useEffect(() => { videoRef.current?.trace("page.active", { active, view: mode, video_id: curId, episode: curEp }); }, [active, mode, curId, curEp]);
+  useEffect(() => {
+    if (active && curId) onView?.(curId);
+  }, [active, curId, onView]);
 
   /* 观看进度：onTime 里每 5 秒落一次；拖动进度条期间忽略底层 timeupdate 防止进度条回跳 */
   const onTimeTick = (t: number) => {
@@ -207,8 +213,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
 
   /* 倍速：长按 / 锁定 → 2.0x，否则用基准倍速 */
   const effRate = holdSpeed || speedLock ? 2 : rate;
-  /* 进度条显示百分比（拖动时用拖动值） */
-  const barProgress = barPct ?? (duration ? time / duration : 0);
+  /* 进度条显示百分比（拖动或手势快进快退时同步显示） */
+  const barProgress = barPct ?? (scrub ? scrub.pct / 100 : (duration ? time / duration : 0));
   /* 是否为横屏视频（16:9 等宽大于高） */
   const isLandscapeVideo = vsize.w > vsize.h && vsize.h > 0;
   /* 仅当「全屏 + 横屏视频 + 手机系统视口尚未横过来 (!vpLandscape)」时才用 CSS 旋转 90° 兜底；
@@ -223,6 +229,25 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     keepPlayingTimers.current.forEach((id) => window.clearTimeout(id));
     keepPlayingTimers.current = [];
   }, []);
+
+  const nextEp = useMemo(() => {
+    const list = detail?.episodes;
+    if (kind !== "video" || !list?.length) return undefined;
+    const exact = list.find((e) => e.ep_num === curEp + 1);
+    if (exact) return exact;
+    const idx = list.findIndex((e) => e.ep_num === curEp);
+    if (idx >= 0 && idx + 1 < list.length) return list[idx + 1];
+    return list.find((e) => e.ep_num > curEp);
+  }, [kind, detail?.episodes, curEp]);
+
+  const goNextEp = useCallback(() => {
+    if (!nextEp) return false;
+    cancelKeepPlaying();
+    setEpMap((m) => ({ ...m, [curId]: nextEp.ep_num }));
+    setPanel(null);
+    toast(`第 ${nextEp.ep_num} 集`, "info");
+    return true;
+  }, [nextEp, curId, cancelKeepPlaying, toast]);
   const keepPlayingThroughTransition = useCallback(() => {
     cancelKeepPlaying();
     const el = videoRef.current?.el();
@@ -533,20 +558,21 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     }
   };
 
-  /* —— 长按 2x（上滑锁定） / 横拖定位 / 放大平移 / 单击暂停或播放 —— */
+  /* —— 长按 2x（上滑锁定） / 全屏横拖快进快退 / 放大平移 / 单击暂停或播放 —— */
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
+    if (controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
     const el = e.currentTarget;
     const span = rotated ? (el.clientHeight || window.innerHeight || 1) : (el.clientWidth || 1);
     const g = {
       x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
       t: Date.now(), base: time, width: span,
       playing: videoRef.current?.el()?.paused === false,
-      zoomed: zoomRef.current.scale > 1.05,
+      zoomed: !isDesktop && zoomRef.current.scale > 1.05,
       zoomX: zoomRef.current.x,
       zoomY: zoomRef.current.y,
+      scrubStartDx: 0,
       mode: "idle" as "idle" | "hold" | "scrub" | "pan",
-      timer: window.setTimeout(() => {
+      timer: isDesktop ? null : (window.setTimeout(() => {
         const cur = gesture.current;
         if (!cur || cur.mode !== "idle" || pinchRef.current) return;
         cur.mode = "hold";
@@ -555,7 +581,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         setLockArmed(false);
         lockArmedRef.current = false;
         try { navigator.vibrate?.(25); } catch { /* ignore */ }
-      }, 380) as unknown as number,
+      }, 380) as unknown as number),
     };
     gesture.current = g;
   };
@@ -566,7 +592,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       return;
     }
     const g = gesture.current;
-    if (!g || isDesktop || !e.isPrimary) return;
+    if (!g || !e.isPrimary) return;
     const rawDx = e.clientX - g.x;
     const rawDy = e.clientY - g.y;
     const dx = rotated ? rawDy : rawDx;
@@ -584,15 +610,20 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     }
 
     if (g.mode === "idle") {
-      if (g.zoomed && Math.hypot(dx, dy) > 6) {
+      if (!isDesktop && g.zoomed && Math.hypot(dx, dy) > 6) {
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "pan";
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      } else if (Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      } else if (duration > 0 && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "scrub";
+        g.scrubStartDx = dx;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      } else if (Math.abs(dy) > 16) {
+        if (isDesktop) wake();
+        const res = computeScrubTarget(g.base, 0, g.width, duration);
+        scrubTarget.current = res.target;
+        setScrub(res);
+      } else if (!isDesktop && Math.abs(dy) > 16) {
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "pan";
       }
@@ -613,9 +644,10 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (g.mode === "scrub") {
       const total = duration || 0;
       if (!total) return;
-      const target = Math.max(0, Math.min(total - 0.2, g.base + (dx / g.width) * total));
-      scrubTarget.current = target;
-      setScrub({ pct: (target / total) * 100, target });
+      if (isDesktop) wake();
+      const res = computeScrubTarget(g.base, dx - g.scrubStartDx, g.width, total);
+      scrubTarget.current = res.target;
+      setScrub(res);
     }
   };
 
@@ -646,16 +678,17 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       const target = scrubTarget.current;
       setScrub(null);
       scrubTarget.current = null;
+      if (isDesktop) suppressClickUntilRef.current = Date.now() + 250;
       if (!cancelled && target != null) {
         setErr("");
         setTime(target);
-        videoRef.current?.seek(target, "mobile_gesture");
+        videoRef.current?.seek(target, isDesktop ? "desktop_drag_gesture" : "mobile_gesture");
       }
       if (!cancelled && g.playing && active && !controlsLocked) videoRef.current?.play();
       return;
     }
 
-    if (cancelled || g.mode !== "idle") return;
+    if (isDesktop || cancelled || g.mode !== "idle") return;
     const moveDist = e ? Math.hypot(e.clientX - g.x, e.clientY - g.y) : 0;
     if (Date.now() - g.t < 380 && moveDist < 16) {
       cancelKeepPlaying();
@@ -781,8 +814,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     if (user) api.follow(uid, on).catch(() => {});
   };
 
-  const keyStateRef = useRef({ go, toggleFull, onLike, onFav, time, panel });
-  keyStateRef.current = { go, toggleFull, onLike, onFav, time, panel };
+  const keyStateRef = useRef({ go, goNextEp, toggleFull, onLike, onFav, time, panel });
+  keyStateRef.current = { go, goNextEp, toggleFull, onLike, onFav, time, panel };
 
   /* 键盘（用 ref 读最新回调，避免随 time 每秒反复重绑） */
   useEffect(() => {
@@ -805,6 +838,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
         case "s": case "S": keyStateRef.current.onFav(); break;
         case "c": case "C": setPanel("comments"); break;
         case "e": case "E": setPanel("episodes"); break;
+        case "n": case "N": e.preventDefault(); if (!keyStateRef.current.goNextEp()) keyStateRef.current.go(1); break;
         default: break;
       }
     };
@@ -890,7 +924,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
               {mountVideo ? (
                 <div className={rotated ? "fs-landscape" : (!isDesktop && activeFs ? "fs-immersive" : "absolute inset-0")}>
                   <div
-                    className="absolute inset-0 overflow-hidden"
+                    className={`absolute inset-0 overflow-hidden select-none ${isDesktop && scrub ? "cursor-ew-resize" : ""}`}
                     style={{ touchAction: activeFs || zoom.scale > 1.05 ? "none" : "pan-y" }}
                     onTouchStart={onTouchStart}
                     onTouchMove={onTouchMove}
@@ -916,7 +950,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       panX={zoom.x}
                       panY={zoom.y}
                       isGesturing={zoom.gesturing}
-                      onClick={() => { if (isDesktop) { cancelKeepPlaying(); videoRef.current?.toggle(); } }}
+                      onClick={() => { if (isDesktop && Date.now() >= suppressClickUntilRef.current) { cancelKeepPlaying(); videoRef.current?.toggle(); } }}
                       onTime={onTimeTick}
                       onDuration={onDurationTick}
                       onBuffered={setBuffered}
@@ -925,18 +959,24 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       onPlaying={() => { setPaused(false); setWaiting(false); setErr(""); }}
                       onPause={() => setPaused(true)}
                       onWaiting={() => setWaiting(true)}
-                      onEnded={() => { const next = episodes.find((e) => e.ep_num === curEp + 1); if (next) pickEp(next.ep_num); }}
+                      onEnded={() => { if (nextEp) pickEp(nextEp.ep_num); }}
                       onError={(m) => setErr(m)}
                     />
                   </div>
 
-                  {/* 横拖定位浮层 */}
-                  {!isDesktop && scrub && (
-                    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none" style={{ background: "rgba(0,0,0,.25)" }}>
-                      <span className="text-[26px] font-bold hg-ink tabular-nums hg-ov-shadow">{fmtTime(scrub.target)}</span>
-                      <span className="text-[11px] hg-ink-4 mt-1 tabular-nums">/ {fmtTime(duration)}</span>
-                      <div className="mt-4 w-[62%] h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,.25)" }}>
-                        <div className="h-full bg-white" style={{ width: `${scrub.pct}%` }} />
+                  {/* 横拖定位浮层（移动端 & 桌面端通用） */}
+                  {scrub && (
+                    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none" style={{ background: "rgba(0,0,0,.24)" }}>
+                      <div className="px-5 py-3.5 rounded-2xl backdrop-blur-md flex flex-col items-center min-w-[200px] max-w-[72%]"
+                        style={{ background: "rgba(0,0,0,.58)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.1)" }}>
+                        <div className="flex items-baseline gap-1.5 tabular-nums">
+                          <span className="text-[25px] font-bold hg-ink">{fmtTime(scrub.target)}</span>
+                          <span className="text-[12px] hg-ink-4">/ {fmtTime(duration)}</span>
+                        </div>
+                        <span className="mt-0.5 text-[12px] font-semibold hg-ink-2 tabular-nums">{formatScrubDelta(scrub.delta)}</span>
+                        <div className="mt-3 w-full min-w-[160px] h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,.25)" }}>
+                          <div className="h-full bg-white" style={{ width: `${scrub.pct}%` }} />
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1040,6 +1080,13 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                           className="hg-chip shrink-0 player-round-hit player-transport-hit w-9 h-9 rounded-full flex items-center justify-center pressable">
                           {paused ? <IPlayF size={18} /> : <IPauseF size={17} />}
                         </button>
+                        {nextEp && (
+                          <button onClick={goNextEp}
+                            aria-label={`下一集（第 ${nextEp.ep_num} 集）`}
+                            className="hg-chip shrink-0 player-round-hit player-transport-hit w-9 h-9 rounded-full flex items-center justify-center pressable">
+                            <INext size={16} strokeWidth={1.8} />
+                          </button>
+                        )}
                         <span className="shrink-0 text-[11.5px] font-semibold hg-ink-2 tabular-nums">{fmtTime(time)}</span>
                         <button
                           onClick={() => {
@@ -1274,10 +1321,19 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                     style={{ background: "linear-gradient(0deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.42) 45%, transparent 100%)" }} />
                   <p className="relative pl-4 pr-[72px] pb-2 text-[14px] font-semibold leading-snug hg-ink hg-ov-shadow clamp-2">{meta.title}</p>
                   <div className="relative pt-1.5 pb-2">
-                    <button onClick={() => setPanel("detail")}
-                      className="pl-4 pr-[72px] flex items-center gap-0.5 text-[10.5px] font-medium hg-ink hg-ov-shadow pressable">
-                      {kind === "post" ? "查看详情" : episodes.length > 0 ? `详情 · 第 ${curEp}/${episodes.length} 集` : `详情 · 第 ${curEp} 集`}<IChevR size={11} />
-                    </button>
+                    <div className="pl-4 pr-[72px] flex items-center gap-2">
+                      <button onClick={() => setPanel("detail")}
+                        className="flex items-center gap-0.5 text-[10.5px] font-medium hg-ink hg-ov-shadow pressable">
+                        {kind === "post" ? "查看详情" : episodes.length > 0 ? `详情 · 第 ${curEp}/${episodes.length} 集` : `详情 · 第 ${curEp} 集`}<IChevR size={11} />
+                      </button>
+                      {nextEp && (
+                        <button onClick={goNextEp}
+                          aria-label={`下一集（第 ${nextEp.ep_num} 集）`}
+                          className="hg-chip px-2 h-5 rounded-full flex items-center gap-1 text-[10.5px] font-semibold hg-ink pressable">
+                          <INext size={11} strokeWidth={1.8} />下一集
+                        </button>
+                      )}
+                    </div>
                     {isActive && (
                       <div className="mx-4 mt-1.5 relative" style={{ height: 22, touchAction: "none" }}
                         onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarCancel}>
@@ -1306,13 +1362,13 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       {/* 桌面控制条 */}
       {isDesktop && (
         <PlayerControls
-          paused={paused} time={time} duration={duration} buffered={buffered} rate={rate}
+          paused={paused} time={scrub ? scrub.target : time} duration={duration} buffered={buffered} rate={rate}
           muted={muted} volume={volume} theater={theater} fullscreen={fullscreen}
           visible={active && !idle}
           seekEnabled={active && !controlsLocked}
           seekKey={playKey}
-          nextDisabled={!episodes.some((e) => e.ep_num === curEp + 1) && safeIndex >= videoIds.length - 1}
-          nextTitle={episodes.some((e) => e.ep_num === curEp + 1) ? "下一集" : "下一部 ↓"}
+          nextDisabled={!nextEp && safeIndex >= videoIds.length - 1}
+          nextTitle={nextEp ? `下一集（第 ${nextEp.ep_num} 集）` : "下一部 ↓"}
           onToggle={() => videoRef.current?.toggle()}
           onSeek={(t, source) => { videoRef.current?.seek(t, source); setTime(t); }}
           onSeekInteraction={(phase, input, target, pointerTarget) => videoRef.current?.trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget })}
@@ -1323,11 +1379,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
           onLock={lockControls}
           onTheater={() => setTheater((v) => !v)}
           onFullscreen={toggleFull}
-          onNext={() => {
-            const nx = episodes.find((e) => e.ep_num === curEp + 1);
-            if (nx) pickEp(nx.ep_num);
-            else go(1);
-          }}
+          onNext={() => { if (!goNextEp()) go(1); }}
         />
       )}
 
