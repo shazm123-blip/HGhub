@@ -836,3 +836,8 @@ html.plat-macos .win-page-in { animation: apple-page .25s var(--ease-spring) bot
   :is(html.plat-ios, html.plat-macos) :is(.a-pop,.a-page-in,.a-page-out,.win-page-in,.a-sheet,.a-sheet-out,.a-scale-in,.a-rise,.a-toast,.shimmer) { animation-duration: .01ms; animation-iteration-count: 1; }
   :is(html.plat-ios, html.plat-macos) .pressable { transition: none; }
 }
+
+/* 扩大视频圆钮的触摸区域；底部播放键向下扩展，避开上方的进度条。 */
+html.plat-ios .player-round-hit { position: relative; }
+html.plat-ios .player-round-hit::after { content: ""; position: absolute; inset: -4px; }
+html.plat-ios .player-transport-hit::after { inset: 0 -4px -8px; }

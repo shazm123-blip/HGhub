@@ -1030,15 +1030,15 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       <div className="absolute z-40 flex items-center gap-2"
                         style={{ top: fsTop, right: fsRight }}>
                         <button onClick={() => setMuted((m) => !m)} aria-label={muted ? "取消静音" : "静音"}
-                          className="hg-chip-strong w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
+                          className="hg-chip-strong player-round-hit w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
                           {muted ? <IVolMute size={17} /> : <IVol size={17} />}
                         </button>
                         <button onClick={lockControls} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false}
-                          className="hg-chip-strong w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
+                          className="hg-chip-strong player-round-hit w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
                           <ILockF size={17} />
                         </button>
                         <button onClick={exitFs} aria-label="退出全屏"
-                          className="hg-chip-strong w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
+                          className="hg-chip-strong player-round-hit w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
                           <ICompress size={18} />
                         </button>
                       </div>
@@ -1068,7 +1068,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                         style={{ left: fsLeft, right: fsRight, bottom: fsBottom }}>
                         <button onClick={() => { cancelKeepPlaying(); videoRef.current?.toggle(); }}
                           aria-label={paused ? "播放" : "暂停"}
-                          className="hg-chip shrink-0 w-9 h-9 rounded-full flex items-center justify-center pressable">
+                          className="hg-chip shrink-0 player-round-hit player-transport-hit w-9 h-9 rounded-full flex items-center justify-center pressable">
                           {paused ? <IPlayF size={18} /> : <IPauseF size={17} />}
                         </button>
                         <span className="shrink-0 text-[11.5px] font-semibold hg-ink-2 tabular-nums">{fmtTime(time)}</span>
@@ -1185,7 +1185,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                   </div>
                 ) : (
                   <div className="absolute inset-x-0 z-20 flex items-center gap-2 px-2.5" style={{ top: "calc(var(--sat, 0px) + 6px)", paddingRight: 148 }}>
-                    <button onClick={onBack} aria-label="返回" className="shrink-0 hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><IBack size={20} /></button>
+                    <button onClick={onBack} aria-label="返回" className="shrink-0 hg-chip player-round-hit w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><IBack size={20} /></button>
                     <span className="text-[14.5px] font-semibold hg-ink hg-ov-shadow truncate">{title}</span>
                     <span className="ml-auto shrink-0 whitespace-nowrap px-2 py-0.5 rounded-full hg-chip text-[11px] font-semibold" style={{ color: "rgba(255,255,255,.9)" }}>{safeIndex + 1} / {videoIds.length}</span>
                   </div>
@@ -1461,13 +1461,13 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       {!isDesktop && !activeFs && !clean && !controlsLocked && active && !panel && (
         <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
           <button onClick={() => setMuted(m => !m)} aria-label={muted ? "取消静音" : "静音"}
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
+            className="hg-chip player-round-hit w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
             {muted ? <IVolMute size={17} /> : <IVol size={17} />}
           </button>
           <button onClick={lockControls} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false}
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ILockF size={17} /></button>
+            className="hg-chip player-round-hit w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ILockF size={17} /></button>
           <button onClick={() => store.setTab("search")} aria-label="搜索"
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ISearch size={18} /></button>
+            className="hg-chip player-round-hit w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ISearch size={18} /></button>
         </div>
       )}
       {controlsLocked && <PlaybackLock active={active} onUnlock={() => { setControlsLocked(false); wake(); }} />}

@@ -38,7 +38,7 @@ export default function IosBackEdge({ onBack }: { onBack: () => void }) {
         reset();
         if (commit && !hasBackHandler() && !isPlaybackLocked()) onBack();
       };
-    } else if (x > 0) {
+    } else {
       d.front.style.translate = x + "px";
       d.behind.style.translate = (x - d.width) * .18 + "px";
     }
