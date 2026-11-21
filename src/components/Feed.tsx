@@ -880,13 +880,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     : vpLandscape
       ? "calc(max(env(safe-area-inset-bottom, 0px), 12px) + 38px)"
       : "calc(var(--sab, 0px) + 52px)";
+  // rotate(90deg) 后，舞台左边对应手机顶部，右边对应底部。
   const fsLeft = rotated
-    ? "calc(var(--sab, 16px) + 12px)"
+    ? `calc(var(${isIos ? "--sat" : "--sab"}, 16px) + 12px)`
     : vpLandscape
       ? "max(env(safe-area-inset-left, 0px), 16px)"
       : "16px";
   const fsRight = rotated
-    ? "calc(var(--sat, 12px) + 12px)"
+    ? `calc(var(${isIos ? "--sab" : "--sat"}, 12px) + 12px)`
     : vpLandscape
       ? "max(env(safe-area-inset-right, 0px), 16px)"
       : "16px";
