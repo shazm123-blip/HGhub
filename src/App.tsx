@@ -3,6 +3,8 @@ import { useStore, type Page, type Tab } from "./store";
 import { isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
 import { hasBackHandler, isPlaybackLocked, runBack } from "./back";
+import IosBackEdge from "./components/IosBackEdge";
+import { IHome, IHomeF, ISearch, IGrid, IGridF, IUser, IUserF } from "./icons";
 import Home from "./pages/Home";
 import Search, { RankPage } from "./pages/Search";
 import Category, { ChannelPage } from "./pages/Category";
@@ -18,7 +20,7 @@ import { tracePlayback } from "./playbackDiagnostics";
 
 /* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
 function TabBar() {
-  const { tab, setTab, theme } = useStore();
+  const { tab, setTab, theme, platform } = useStore();
   const items: { k: Tab; label: string }[] = [
     { k: "home", label: "首页" },
     { k: "search", label: "搜索" },
@@ -30,6 +32,18 @@ function TabBar() {
      浅色主题下底栏跟着换成浅色，深色主题保持深色。 */
   const overVideo = tab === "home";
   const lightBar = !overVideo && theme === "light";
+  if (platform === "ios") {
+    const icons = { home: [IHome, IHomeF], search: [ISearch, ISearch], category: [IGrid, IGridF], profile: [IUser, IUserF] };
+    return <nav aria-label="主导航" className={`hg-tabbar ios-tabbar ${overVideo ? "mat-chrome" : "mat"}`}>
+      {items.map(({ k, label }) => {
+        const selected = k === tab;
+        const Icon = icons[k][selected ? 1 : 0];
+        return <button key={k} aria-current={selected ? "page" : undefined} onClick={() => setTab(k)}>
+          <Icon size={23} /><span>{label}</span>
+        </button>;
+      })}
+    </nav>;
+  }
   return (
     <nav className="hg-tabbar absolute bottom-0 inset-x-0 z-30"
       style={{
@@ -121,7 +135,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 
   const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none");
   const pageActive = stack.length === 0 && !loginOpen;
-  const bottomInset = isMobile ? (fs || clean ? 0 : 40) : 14;
+  const bottomInset = isMobile ? (fs || clean ? 0 : platform === "ios" ? 49 : 40) : 14;
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
@@ -129,14 +143,15 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
     <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
       {!isMobile && !theater && <DesktopRail collapsed={collapsed} />}
       <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${!isMobile && theater ? "is-theater-main" : ""}`}>
-        <div className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
-        <div className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
-        <div className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
-        <div className={vis("profile")}><Profile wide={wide} active={pageActive && tab === "profile"} /></div>
+        <div data-tab className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
+        <div data-tab className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
+        <div data-tab className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
+        <div data-tab className={vis("profile")}><Profile wide={wide} active={pageActive && tab === "profile"} /></div>
 
         {stack.map((p, i) => (
-          <div key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
+          <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
             <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !loginOpen} bottomInset={stackInset} />
+            {platform === "ios" && i === stack.length - 1 && !loginOpen && !fs && !clean && <IosBackEdge onBack={pop} />}
           </div>
         ))}
 

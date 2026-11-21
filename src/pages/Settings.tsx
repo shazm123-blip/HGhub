@@ -1,5 +1,6 @@
+import IosNavigation from "../components/IosNavigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { api, APP_VERSION, hostOf, logLine, platform, type UpdateInfo } from "../api";
+import { api, isIos, APP_VERSION, hostOf, logLine, platform, type UpdateInfo } from "../api";
 import { useStore } from "../store";
 import { Modal, Toggle } from "../components/ui";
 import LinePicker from "../components/LinePicker";
@@ -50,6 +51,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
+      {isIos ? <IosNavigation title="设置" onBack={onBack} /> : (
       <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
         <div className="relative px-3 pt-2 pb-4">
@@ -65,7 +67,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
           </div>
         </div>
       </div>
-
+      )}
       <div className="flex-1 scroll-y px-4 pt-1" style={{ paddingBottom: "calc(var(--sab, 0px) + 32px)" }}>
         <div className={wide ? "max-w-[720px] mx-auto" : ""}>
           <Section title="外观">

@@ -1,5 +1,6 @@
+import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, cover, fmt, isMobile } from "../api";
+import { api, isIos, cover, fmt, isMobile } from "../api";
 import type { Post } from "../types";
 import { useStore } from "../store";
 import { Empty, Img } from "../components/ui";
@@ -59,6 +60,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
+      {isIos ? <IosNavigation title="黄果吃瓜" subtitle="圈内爆料" onBack={onBack} /> : (
       <div className="shrink-0 bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
         <div className="h-11 flex items-center gap-2 px-2">
           <button onClick={onBack} aria-label="返回" className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
@@ -66,6 +68,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
           <span className="text-[10.5px] text-mut ml-1">圈内爆料</span>
         </div>
       </div>
+      )}
       <div className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {items.length ? (
           <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
@@ -132,11 +135,12 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
+      {isIos ? <IosNavigation title="吃瓜详情" onBack={onBack} /> : (
       <div className="shrink-0 flex items-center gap-2 px-2 bg-s1" style={{ paddingTop: isMobile ? "var(--sat, 0px)" : 0, height: isMobile ? "calc(44px + var(--sat, 0px))" : 44 }}>
         <button onClick={onBack} aria-label="返回" className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={19} /></button>
         <span className="text-[13.5px] font-semibold text-on">吃瓜详情</span>
       </div>
-
+      )}
       <div className="flex-1 scroll-y" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {err ? (
           <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => setReloadTick((n) => n + 1)} />

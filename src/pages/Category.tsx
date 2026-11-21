@@ -1,5 +1,6 @@
+import IosNavigation from "../components/IosNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, fmt } from "../api";
+import { api, isIos, fmt } from "../api";
 import type { Post, VideoCard } from "../types";
 import { useStore } from "../store";
 import { Masonry, RowCard } from "../components/cards";
@@ -87,6 +88,7 @@ export default function Category({ wide: _wide, active }: { wide: boolean; activ
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
+      {isIos ? <IosNavigation title="分类" subtitle={`${CHANNELS.length + 1} 个频道 · 每周持续上新`} action={<button aria-label="刷新分类" disabled={refreshing} onClick={() => void refreshAll()}><IRefresh size={20} className={refreshing ? "animate-spin" : ""} /></button>} /> : (
       <div className="shrink-0 px-4 pb-1 flex items-end justify-between" style={{ paddingTop: "calc(var(--sat, 0px) + 14px)" }}>
         <div className="flex items-end gap-2.5">
           <span className="text-[24px] font-bold text-on leading-none">分类</span>
@@ -100,7 +102,7 @@ export default function Category({ wide: _wide, active }: { wide: boolean; activ
           <IRefresh size={16} className={refreshing ? "animate-spin" : ""} />
         </button>
       </div>
-
+      )}
       <div className="flex-1 scroll-y pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
         {/* 排行榜入口 */}
         <button onClick={() => push({ kind: "ranks" })}

@@ -735,3 +735,17 @@ html.theme-light .article-body { color: rgba(20,24,30,.82); }
 /* Apple 平台：视频浮层里原本写死的蓝色强调改为品牌橙（浮层固定压暗底，用深色模式的橙） */
 html.plat-ios .desktop-seek-played, html.plat-macos .desktop-seek-played { background: #ff9f0a; }
 html.plat-ios .hg-link, html.plat-macos .hg-link { color: #ffb340; }
+
+.ios-tabbar { position: absolute; z-index: 30; inset: auto 0 0; display: flex; padding-bottom: var(--sab); box-shadow: inset 0 .5px var(--p-sep); color: var(--p-mut); }
+.ios-tabbar.mat-chrome { color: #ccc; }
+.ios-tabbar button { flex: 1; height: 49px; display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 10px; line-height: 1; font-weight: 500; }
+.ios-tabbar button[aria-current] { color: var(--p-primary); }
+.ios-tabbar.mat-chrome button[aria-current] { color: #ff9f0a; }
+.ios-navigation { position: relative; flex: none; padding-top: var(--sat); }
+.ios-toolbar { display: flex; align-items: center; justify-content: space-between; height: 44px; padding-inline: 12px; }
+.ios-toolbar button { min-width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--p-primary); font-size: 17px; }
+.ios-toolbar button:only-child:not([aria-label="返回"]) { margin-left: auto; }
+.ios-navigation h1 { padding: 0 18px 8px; font-size: 34px; line-height: 1.2; font-weight: 700; }
+.ios-navigation.compact { background: var(--p-mat); box-shadow: inset 0 -.5px var(--p-sep); }
+.ios-navigation.compact h1 { position: absolute; bottom: 0; inset-inline: 76px; padding: 0; line-height: 44px; text-align: center; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.ios-back-edge { position: absolute; inset: calc(var(--sat) + 52px) auto var(--sab) 0; width: 16px; touch-action: pan-y; }
