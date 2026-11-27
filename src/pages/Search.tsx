@@ -3,14 +3,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, fmt, isIos, isMacos, isMobile } from "../api";
 import type { RankItem, VideoCard } from "../types";
 import { useStore } from "../store";
+import { getVideoOrientation } from "../videoMeta";
 import { Masonry, RankRow } from "../components/cards";
-import { Empty, Img } from "../components/ui";
+import { CardGridSkeleton, Empty, Img, RankListSkeleton, SegmentedControl } from "../components/ui";
 import { IBack, IClose, IFireF, IPlayF, IRefresh, ISearch, ITrophy } from "../icons";
 
 const HOT_TAGS = ["都市", "逆袭", "古风", "系统", "后宫", "校园", "仙侠", "职场", "大男主", "御姐", "脑洞", "奇幻"];
 
 export default function Search({ active, wide }: { active: boolean; wide: boolean }) {
-  const { push, searchHist, addSearch, removeSearchHist, clearSearchHist, lineVersion, getVideoOrientation } = useStore();
+  const { push, searchHist, addSearch, removeSearchHist, clearSearchHist, lineVersion } = useStore();
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(false);
   const [submitted, setSubmitted] = useState("");
@@ -252,9 +253,9 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
                       <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
                         <Img src={it.cover} />
                         <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
-                        {ori && (
+                        {ori?.orientation === "landscape" && (
                           <span className="absolute top-1.5 right-1.5 px-1 py-0.5 rounded bg-black/65 text-[9.5px] text-white/95 leading-none">
-                            {ori.orientation === "landscape" ? "横屏" : "竖屏"}
+                            横屏
                           </span>
                         )}
                         <span className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5 text-[10px] font-semibold text-white/90 tsh">
@@ -298,7 +299,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
                 </div>
               </>
             ) : loading ? (
-              <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+              <CardGridSkeleton wide={wide} />
             ) : (
               <Empty icon={<ISearch size={26} />} title={err || "没有找到相关内容"}
                 sub={err ? "请检查网络或切换线路后重试" : "换个关键词试试，比如「都市」「逆袭」"}
@@ -367,20 +368,20 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
             </div>
           </div>
           </>}
-          <div className="segment-control flex bg-s3 rounded-(--r-ctl) p-1 mt-3">
-            {RANK_TABS.map((t) => (
-              <button aria-pressed={tab === t.k} key={t.k} onClick={() => setTab(t.k)}
-                className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold transition-all ${tab === t.k ? "tonal elev-1" : "text-mut"}`}
-                style={tab === t.k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{t.label}</button>
-            ))}
-          </div>
+          <SegmentedControl
+            className="mt-3"
+            ariaLabel="榜单类型"
+            value={tab}
+            onChange={setTab}
+            options={RANK_TABS.map((t) => ({ value: t.k, label: t.label }))}
+          />
         </div>
       </div>
 
       <div className="flex-1 scroll-y px-3.5 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         <div className={wide ? "max-w-[780px] mx-auto" : ""}>
           {loading ? (
-            <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+            <RankListSkeleton />
           ) : items.length ? (
             items.map((it) => (
               <RankRow key={`${it.video_id}-${it.rank}`} item={it} metricMax={max}

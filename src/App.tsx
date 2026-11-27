@@ -6,9 +6,6 @@ import { hasBackHandler, isPlaybackLocked, runBack } from "./back";
 import IosBackEdge from "./components/IosBackEdge";
 import { IClose, IGrid, IGridF, IHome, IHomeF, IKeyboard, ISearch, IUser, IUserF } from "./icons";
 import Home from "./pages/Home";
-import Search, { RankPage } from "./pages/Search";
-import Category, { ChannelPage } from "./pages/Category";
-import Profile from "./pages/Profile";
 import Feed from "./components/Feed";
 import LoginModal from "./components/LoginModal";
 import LinePicker from "./components/LinePicker";
@@ -17,6 +14,11 @@ import { DesktopRail, DesktopTitleBar, MacToolbar } from "./components/DesktopCh
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
 
+const Search = lazy(() => import("./pages/Search"));
+const RankPage = lazy(() => import("./pages/Search").then((m) => ({ default: m.RankPage })));
+const Category = lazy(() => import("./pages/Category"));
+const ChannelPage = lazy(() => import("./pages/Category").then((m) => ({ default: m.ChannelPage })));
+const Profile = lazy(() => import("./pages/Profile"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const PostsPage = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostsPage })));
 const PostDetail = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostDetail })));
@@ -105,6 +107,37 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
   const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, linePickerOpen, shortcutsOpen, setShortcutsOpen, fs } = useStore();
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
+  const [visitedTabs, setVisitedTabs] = useState<Record<Tab, boolean>>(() => ({
+    home: true, search: tab === "search", category: tab === "category", profile: tab === "profile",
+  }));
+  useEffect(() => {
+    setVisitedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
+  }, [tab]);
+
+  const prevStackRef = useRef<Page[]>(stack);
+  const [exitingPage, setExitingPage] = useState<Page | null>(null);
+  const exitTimerRef = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const prev = prevStackRef.current;
+    prevStackRef.current = stack;
+    if (stack.length < prev.length) {
+      const popped = prev[prev.length - 1];
+      const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      if (popped && !reduceMotion) {
+        window.clearTimeout(exitTimerRef.current);
+        setExitingPage(popped);
+        exitTimerRef.current = window.setTimeout(() => {
+          exitTimerRef.current = undefined;
+          setExitingPage(null);
+        }, 210);
+      }
+    } else if (stack.length > prev.length) {
+      window.clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = undefined;
+      setExitingPage(null);
+    }
+  }, [stack]);
+  useEffect(() => () => window.clearTimeout(exitTimerRef.current), []);
 
   useLayoutEffect(() => {
     const el = mainRef.current;
@@ -149,17 +182,41 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
+  const tabFallback = <div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>;
+
   return (
     <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
       {!isMobile && platform !== "macos" && !theater && <DesktopRail collapsed={collapsed} />}
       <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${!isMobile && theater ? "is-theater-main" : ""}`}>
         <div data-tab className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
-        <div data-tab className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
-        <div data-tab className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
-        <div data-tab className={vis("profile")}><Profile wide={wide} active={pageActive && tab === "profile"} /></div>
+        <div data-tab className={vis("search")}>
+          {(visitedTabs.search || tab === "search") && (
+            <Suspense fallback={tabFallback}><Search active={pageActive && tab === "search"} wide={wide} /></Suspense>
+          )}
+        </div>
+        <div data-tab className={vis("category")}>
+          {(visitedTabs.category || tab === "category") && (
+            <Suspense fallback={tabFallback}><Category wide={wide} active={pageActive && tab === "category"} /></Suspense>
+          )}
+        </div>
+        <div data-tab className={vis("profile")}>
+          {(visitedTabs.profile || tab === "profile") && (
+            <Suspense fallback={tabFallback}><Profile wide={wide} active={pageActive && tab === "profile"} /></Suspense>
+          )}
+        </div>
+
+        {exitingPage && (
+          <div data-stack-exiting key={`exit-${exitingPage.key}`}
+            className={`absolute inset-0 z-30 bg-bg pointer-events-none ${isMobile ? "a-page-out" : "win-page-out"}`}
+            style={{ boxShadow: "var(--p-stack-shadow)" }}>
+            <Suspense fallback={null}>
+              <StackPage page={exitingPage} onBack={() => {}} wide={wide} top={false} bottomInset={stackInset} />
+            </Suspense>
+          </div>
+        )}
 
         {stack.map((p, i) => (
-          <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
+          <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "var(--p-stack-shadow)" }}>
             <Suspense fallback={<div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>}>
               <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !modalBlocking} bottomInset={stackInset} />
             </Suspense>

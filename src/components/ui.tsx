@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cover, isIos } from "../api";
 import { pushBackHandler } from "../back";
-import { useStore } from "../store";
+import { useToasts } from "../store";
 import { ICheck, IHeartF, ISparkF, IStarF } from "../icons";
 
 /* ——— 头像 ——— */
@@ -115,7 +115,7 @@ export function Empty({ icon, title, sub, action, onAction, secondaryAction, onS
 
 /* ——— Toast ——— */
 export function ToastHost() {
-  const { toasts } = useStore();
+  const toasts = useToasts();
   return (
     <div aria-live="polite" className="absolute inset-x-0 z-[80] flex flex-col items-center gap-2 pointer-events-none px-6" style={{ bottom: "calc(var(--sab, 0px) + 96px)" }}>
       {toasts.map((t) => (
@@ -131,9 +131,95 @@ export function ToastHost() {
   );
 }
 
+/* ——— 分段滑块控件 ——— */
+export function SegmentedControl<T extends string>({
+  options, value, onChange, ariaLabel, role = "group", className = "",
+}: {
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  ariaLabel?: string;
+  role?: "radiogroup" | "group";
+  className?: string;
+}) {
+  const activeIdx = Math.max(0, options.findIndex((o) => o.value === value));
+  return (
+    <div role={role} aria-label={ariaLabel} className={`segment-control ${className}`}>
+      <div
+        aria-hidden="true"
+        className="segment-indicator"
+        style={{
+          width: `calc((100% - 6px) / ${Math.max(1, options.length)})`,
+          transform: `translateX(${activeIdx * 100}%)`,
+        }}
+      />
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role={role === "radiogroup" ? "radio" : undefined}
+            aria-checked={role === "radiogroup" ? active : undefined}
+            aria-pressed={role !== "radiogroup" ? active : undefined}
+            onClick={() => onChange(opt.value)}
+            className="pressable">
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ——— 骨架屏 ——— */
+export function CardGridSkeleton({ wide = false, count = 8, aspect = "aspect-[100/132]", gap = "gap-1.5" }: {
+  wide?: boolean; count?: number; aspect?: string; gap?: string;
+}) {
+  return (
+    <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} ${gap}`} aria-busy="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className={`relative w-full ${aspect} rounded-(--r-sm) overflow-hidden shimmer`} />
+      ))}
+    </div>
+  );
+}
+
+export function RowCardsSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <div className="flex gap-2.5" aria-busy="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="row-cover w-[108px] shrink-0">
+          <div className="w-full aspect-[3/4] rounded-(--r-sm) shimmer" />
+          <div className="mt-1.5 h-3 w-4/5 rounded shimmer" />
+          <div className="mt-1 h-2.5 w-3/5 rounded shimmer" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function RankListSkeleton({ count = 6 }: { count?: number }) {
+  return (
+    <div className="space-y-2" aria-busy="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 p-2.5 rounded-(--r-md) bg-s2">
+          <div className="w-7 h-7 rounded-full shimmer shrink-0" />
+          <div className="w-[52px] h-[68px] rounded-lg shimmer shrink-0" />
+          <div className="flex-1 min-w-0 space-y-2">
+            <div className="h-3.5 w-3/4 rounded shimmer" />
+            <div className="h-2.5 w-1/2 rounded shimmer" />
+            <div className="h-1 w-full rounded-full shimmer" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ——— 图片（骨架 + 渐显，自动走本地解密协议；支持同步缓存兜底与瞬时失败自动重试） ——— */
-export function Img({ src, alt = "", className = "", eager = false, raw = false }: {
-  src: string; alt?: string; className?: string; eager?: boolean; raw?: boolean;
+export function Img({ src, alt = "", className = "", imgClassName = "", eager = false, raw = false }: {
+  src: string; alt?: string; className?: string; imgClassName?: string; eager?: boolean; raw?: boolean;
 }) {
   const baseUrl = raw ? src : cover(src);
   const [ok, setOk] = useState(false);
@@ -165,13 +251,29 @@ export function Img({ src, alt = "", className = "", eager = false, raw = false 
     }
   }, [baseUrl, retry]);
 
-  const displayUrl = retry > 0 && baseUrl && !baseUrl.startsWith("data:") && !baseUrl.startsWith("blob:")
+  const retryable = Boolean(baseUrl && !baseUrl.startsWith("data:") && !baseUrl.startsWith("blob:"));
+  const displayUrl = retry > 0 && retryable
     ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}r=${retry}`
     : baseUrl;
 
+  useEffect(() => {
+    if (!err || !retryable) return undefined;
+    const recover = () => {
+      if (document.visibilityState === "hidden") return;
+      setErr(false);
+      setRetry((r) => r + 1);
+    };
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", recover);
+    return () => {
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", recover);
+    };
+  }, [err, retryable]);
+
   const handleError = () => {
-    if (retry < 2 && baseUrl && !baseUrl.startsWith("data:") && !baseUrl.startsWith("blob:")) {
-      const delay = retry === 0 ? 700 : 1800;
+    if (retry < 2 && retryable) {
+      const delay = retry === 0 ? 800 : 2000;
       if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
       retryTimerRef.current = window.setTimeout(() => {
         retryTimerRef.current = null;
@@ -195,7 +297,7 @@ export function Img({ src, alt = "", className = "", eager = false, raw = false 
           decoding="async"
           onLoad={() => { setOk(true); setErr(false); }}
           onError={handleError}
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${ok ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${ok ? "opacity-100" : "opacity-0"} ${imgClassName}`}
           draggable={false}
         />
       )}

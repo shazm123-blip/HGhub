@@ -4,7 +4,7 @@ import { api, isIos, isMacos, fmt } from "../api";
 import type { Post, VideoCard } from "../types";
 import { useStore } from "../store";
 import { Masonry, RowCard } from "../components/cards";
-import { Empty, Img } from "../components/ui";
+import { CardGridSkeleton, Empty, Img, RowCardsSkeleton, SegmentedControl } from "../components/ui";
 import { IBack, IChevR, IClapper, IFileText, IGrid, IRefresh, ISparkF, IStarsF, ITrophy } from "../icons";
 
 export const CHANNELS = [
@@ -191,8 +191,8 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
                 </span>
               </button>
               <HorizontalRow wide={wide}>
-                {list.map((v) => (
-                  <RowCard key={v.id} v={v} onOpen={() => push({
+                {list.map((v, vi) => (
+                  <RowCard key={v.id} v={v} eager={ci < 2 && vi < 4} onOpen={() => push({
                     kind: "feed",
                     videoIds: list.map((x) => x.id),
                     index: list.findIndex((x) => x.id === v.id),
@@ -226,7 +226,7 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
               <button key={post.id} onClick={() => push({ kind: "post", id: post.id })}
                 className="row-cover w-[108px] shrink-0 text-left snap-start pressable">
                 <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
-                  <Img src={post.cover} eager />
+                  <Img src={post.cover} />
                   <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
                   <span className="absolute bottom-1.5 right-1.5 text-[10px] font-semibold text-white/90 tsh">{fmt(post.hot)}</span>
                 </div>
@@ -244,9 +244,17 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
 }
 
 function PreviewStatus({ name, loading, error, onRetry }: { name: string; loading: boolean; error?: string; onRetry: () => void }) {
+  if (loading) {
+    return (
+      <div className="relative">
+        <RowCardsSkeleton count={4} />
+        <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-s1/90 text-[11px] text-mut elev-1">加载中…</span>
+      </div>
+    );
+  }
   return <div className="h-[176px] flex flex-col justify-center items-start gap-2 text-[11.5px] text-dim px-1">
-    <span>{loading ? "加载中…" : error || "暂无内容"}</span>
-    {!loading && error && <button aria-label={`重试${name}`} onClick={onRetry} className="text-primary pressable">重试</button>}
+    <span>{error || "暂无内容"}</span>
+    {error && <button aria-label={`重试${name}`} onClick={onRetry} className="text-primary pressable">重试</button>}
   </div>;
 }
 
@@ -385,13 +393,13 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
           </div>
         )}
         <div className={isIos ? "flex items-center gap-2 mx-4 my-2.5" : "px-4 pb-3 flex items-center gap-2"}>
-          <div className={isIos ? "segment-control flex flex-1" : "flex gap-2"}>
-            {([["new", "最新"], ["hot", "最热"]] as const).map(([k, label]) => (
-              <button aria-pressed={sort === k} key={k} onClick={() => setSort(k)}
-                className={`${isIos ? "flex-1" : "px-4"} h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${sort === k ? "tonal text-on-sec" : "bg-s3 text-mut"}`}
-                style={sort === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{label}</button>
-            ))}
-          </div>
+          <SegmentedControl
+            className={isIos ? "flex-1" : "w-[136px]"}
+            ariaLabel="排序方式"
+            value={sort}
+            onChange={setSort}
+            options={[{ value: "new", label: "最新" }, { value: "hot", label: "最热" }]}
+          />
           <button
             type="button"
             aria-pressed={onlyFinished}
@@ -421,7 +429,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
         ) : err ? (
           <Empty icon={<IGrid size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore(true)} />
         ) : loading ? (
-          <div className="flex justify-center py-10"><div className="w-8 h-8 spinner" /></div>
+          <CardGridSkeleton wide={wide} />
         ) : (
           <Empty icon={<IGrid size={26} />} title="暂无内容" sub="稍后再来看看，或点击右上角刷新" action="刷新" onAction={() => void loadMore(true)} />
         )}

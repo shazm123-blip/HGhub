@@ -187,8 +187,10 @@ pub fn check_addresses_with_mode(addrs: &[SocketAddr], strict: bool) -> Result<(
 /// 与浏览器一致优先 IPv6：连接器以首个地址的协议族为首选，另一族在其失败后（Happy Eyeballs）兜底。
 /// 普通排序会把 IPv4 排在前面；共享 IPv4 出口被上游接口限流时，请求会挂起或返回 502/503，
 /// 而同一网络下浏览器走 IPv6 一切正常。
-fn sort_ipv6_first(addrs: &mut [SocketAddr]) {
-    addrs.sort_unstable_by_key(|addr| (addr.is_ipv4(), *addr));
+fn sort_ipv6_first(addrs: &mut Vec<SocketAddr>) {
+    let mut seen = std::collections::HashSet::with_capacity(addrs.len());
+    addrs.retain(|addr| seen.insert(*addr));
+    addrs.sort_by_key(|addr| addr.is_ipv4());
 }
 
 pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, String> {
@@ -206,7 +208,6 @@ pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, 
         .collect(),
     };
     sort_ipv6_first(&mut addrs);
-    addrs.dedup();
     check_addresses_with_mode(&addrs, strict)?;
     Ok(addrs)
 }
@@ -261,14 +262,23 @@ mod tests {
             "[2600:9000:221c:5000:3:fdd6:fcc0:93a1]:443",
             "18.65.214.3:443",
             "[2600:9000:221c:4000:3:fdd6:fcc0:93a1]:443",
+            "18.65.214.45:443",
+            "[2600:9000:221c:5000:3:fdd6:fcc0:93a1]:443",
         ]
         .iter()
         .map(|s| s.parse().unwrap())
         .collect();
         sort_ipv6_first(&mut addrs);
+        assert_eq!(addrs.len(), 4, "{addrs:?}");
         assert!(addrs[..2].iter().all(SocketAddr::is_ipv6), "{addrs:?}");
         assert!(addrs[2..].iter().all(SocketAddr::is_ipv4), "{addrs:?}");
-        assert_eq!(addrs[2], "18.65.214.3:443".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            addrs[0],
+            "[2600:9000:221c:5000:3:fdd6:fcc0:93a1]:443"
+                .parse::<SocketAddr>()
+                .unwrap()
+        );
+        assert_eq!(addrs[2], "18.65.214.45:443".parse::<SocketAddr>().unwrap());
     }
 
     #[test]

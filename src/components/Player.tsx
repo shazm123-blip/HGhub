@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { fmtTime, isLocalMedia, isMobile, mediaUrl, platform } from "../api";
 import { pushBackHandler } from "../back";
@@ -60,11 +60,15 @@ export default function Player({
   const [controlsLocked, setControlsLocked] = useState(false);
   const [controlsShown, setControlsShown] = useState(false);
 
-  const showControlsTemporarily = () => {
+  const showControlsTemporarily = useCallback(() => {
     setControlsShown(true);
     if (hideControlsTimerRef.current) window.clearTimeout(hideControlsTimerRef.current);
     hideControlsTimerRef.current = window.setTimeout(() => setControlsShown(false), 3000);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (active) showControlsTemporarily();
+  }, [active, showControlsTemporarily]);
 
   const [scrub, setScrub] = useState<{ pct: number; target: number; delta: number } | null>(null);
   const scrubTargetRef = useRef<number | null>(null);
@@ -136,7 +140,7 @@ export default function Player({
         maxMaxBufferLength: isIos ? 20 : 60,
         maxBufferSize: isIos ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
         backBufferLength: isIos ? 6 : 30,
-        startFragPrefetch: false,
+        startFragPrefetch: !isIos,
         maxBufferHole: 0.5,
         nudgeOffset: 0.25,
         nudgeMaxRetry: 6,
@@ -411,7 +415,9 @@ export default function Player({
   const pct = duration > 0 ? (shownTime / duration) * 100 : 0;
 
   return (
-    <div ref={wrapRef} className={cssFull ? "fixed inset-0 z-50 bg-black overflow-hidden group" : `relative bg-black overflow-hidden group ${className}`}>
+    <div ref={wrapRef}
+      onPointerMove={() => { if (!isMobile) showControlsTemporarily(); }}
+      className={cssFull ? "fixed inset-0 z-50 bg-black overflow-hidden group" : `relative bg-black overflow-hidden group ${className}`}>
       <div className="absolute inset-0" inert={controlsLocked}>
       <video
         ref={videoRef}
@@ -454,7 +460,7 @@ export default function Player({
 
       {scrub && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none">
-          <div className="px-4 py-2.5 rounded-2xl backdrop-blur-md flex flex-col items-center" style={{ background: "rgba(0,0,0,.62)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
+          <div className="px-4 py-2.5 rounded-2xl flex flex-col items-center" style={{ background: "rgba(18,18,22,.82)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 8px 24px rgba(0,0,0,.4)" }}>
             <div className="flex items-baseline gap-1.5 tabular-nums">
               <span className="text-[22px] font-bold text-white">{fmtTime(scrub.target)}</span>
               <span className="text-[12px] text-white/65">/ {fmtTime(duration)}</span>
@@ -484,7 +490,8 @@ export default function Player({
             onPointerDown={(e) => e.stopPropagation()}
             onClick={toggle}
             aria-label="播放"
-            className="pointer-events-auto w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
+            className="pointer-events-auto w-16 h-16 rounded-full flex items-center justify-center elev-2 pressable"
+            style={{ background: "rgba(18,18,22,.72)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 8px 24px rgba(0,0,0,.35)" }}>
             <IPlayF size={26} className="text-white ml-0.5" />
           </button>
         </div>

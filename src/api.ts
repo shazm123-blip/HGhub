@@ -135,6 +135,7 @@ export const api = {
 
   clearCache: () => invoke<void>("cache_clear"),
   cacheStats: () => invoke<{ entries: number; bytes: number }>("cache_stats"),
+  prewarmMedia: (url: string) => invoke<void>("media_prewarm", { url }).catch(() => {}),
   netDiag: () => invoke<Record<string, unknown>>("net_diag"),
   postLike: (id: number, on: boolean) => call<unknown>("api_post_like", { id, on }),
   postCollect: (id: number, on: boolean) => call<unknown>("api_post_collect", { id, on }),

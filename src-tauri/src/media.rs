@@ -4,13 +4,19 @@
 //! 所以图片与视频统一走本地自定义协议（Windows/Android 为 `http://hg.localhost`，
 //! macOS 为 `hg://localhost`，见 [`LOCAL_ORIGIN`]）。
 
-use crate::net::fetch_bytes;
+use crate::net::{
+    fetch_bytes, fetch_bytes_with_range, fetch_bytes_with_timeout_attempts, get, read_text_limited,
+    MAX_MEDIA_BYTES, MAX_TEXT_BYTES,
+};
 use aes::cipher::{BlockDecrypt, KeyInit};
 use aes::Aes128;
 use once_cell::sync::Lazy;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::http::{Response, StatusCode};
 
 /// 本平台自定义协议的完整基址。
@@ -106,6 +112,14 @@ const IMG_CACHE_MAX: usize = 100;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const IMG_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(any(target_os = "ios", target_os = "android"))]
+const IMG_DISK_MAX_FILES: usize = 400;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const IMG_DISK_MAX_BYTES: usize = 48 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const IMG_NET_CONCURRENCY: usize = 4;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const RANGE_OPEN_CHUNK: usize = 2 * 1024 * 1024;
+#[cfg(any(target_os = "ios", target_os = "android"))]
 const PL_CACHE_MAX: usize = 24;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const PL_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -114,16 +128,24 @@ const KEY_CACHE_MAX: usize = 64;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const KEY_CACHE_MAX_BYTES: usize = 1 * 1024 * 1024;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_MAX: usize = 8;
+const SEG_CACHE_MAX: usize = 12;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_TOTAL_BYTES: usize = 12 * 1024 * 1024;
+const SEG_CACHE_TOTAL_BYTES: usize = 20 * 1024 * 1024;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const SEG_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const IMG_CACHE_MAX: usize = 240;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const IMG_CACHE_MAX_BYTES: usize = 48 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const IMG_DISK_MAX_FILES: usize = 1200;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const IMG_DISK_MAX_BYTES: usize = 120 * 1024 * 1024;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const IMG_NET_CONCURRENCY: usize = 6;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+const RANGE_OPEN_CHUNK: usize = 4 * 1024 * 1024;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const PL_CACHE_MAX: usize = 60;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -133,11 +155,11 @@ const KEY_CACHE_MAX: usize = 120;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const KEY_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-const SEG_CACHE_MAX: usize = 36;
+const SEG_CACHE_MAX: usize = 48;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-const SEG_CACHE_TOTAL_BYTES: usize = 48 * 1024 * 1024;
+const SEG_CACHE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-const SEG_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const SEG_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 static IMG_CACHE: CacheStore<Arc<Vec<u8>>> =
     Lazy::new(|| Mutex::new(LruCache::new(IMG_CACHE_MAX, IMG_CACHE_MAX_BYTES)));
@@ -148,31 +170,292 @@ static KEY_CACHE: CacheStore<SegmentEntry> =
 static SEG_CACHE: CacheStore<SegmentEntry> =
     Lazy::new(|| Mutex::new(LruCache::new(SEG_CACHE_MAX, SEG_CACHE_TOTAL_BYTES)));
 
+static IMG_DISK_DIR: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
+static DISK_WRITES: AtomicU64 = AtomicU64::new(0);
+static DISK_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+static IMG_NET_SEM: Lazy<tokio::sync::Semaphore> =
+    Lazy::new(|| tokio::sync::Semaphore::new(IMG_NET_CONCURRENCY));
+static PREWARM_GEN: AtomicU64 = AtomicU64::new(0);
+static PREWARM_SEM: Lazy<tokio::sync::Semaphore> = Lazy::new(|| tokio::sync::Semaphore::new(1));
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CdnWebpConfig {
+    base: String,
+    hosts: Vec<String>,
+}
+
+const CDN_CONFIG_TTL: Duration = Duration::from_secs(600);
+const CDN_CONFIG_ERR_TTL: Duration = Duration::from_secs(30);
+const WEBP_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(4);
+const WEBP_HOST_COOLDOWN_TTL: Duration = Duration::from_secs(60);
+
+static IMG_INFLIGHT: Lazy<InFlight<(String, Arc<Vec<u8>>)>> = Lazy::new(InFlight::new);
+static PL_INFLIGHT: Lazy<InFlight<Arc<String>>> = Lazy::new(InFlight::new);
+static SEG_INFLIGHT: Lazy<InFlight<(Option<String>, Arc<Vec<u8>>)>> = Lazy::new(InFlight::new);
+static CDN_WEBP_CACHE: Lazy<Mutex<HashMap<String, (Instant, Option<CdnWebpConfig>)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static CDN_WEBP_FLIGHT: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
+static WEBP_HOST_COOLDOWN: Lazy<Mutex<HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 fn lock_cache<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+type WatchRx<V> = tokio::sync::watch::Receiver<Option<Result<V, String>>>;
+type WatchTx<V> = tokio::sync::watch::Sender<Option<Result<V, String>>>;
+
+struct FlightGuard<V: Clone> {
+    map: Arc<Mutex<HashMap<String, WatchRx<V>>>>,
+    key: String,
+    tx: Option<WatchTx<V>>,
+}
+
+impl<V: Clone> FlightGuard<V> {
+    fn finish(mut self, result: Result<V, String>) -> Result<V, String> {
+        {
+            let mut guard = lock_cache(&self.map);
+            guard.remove(&self.key);
+        }
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Some(result.clone()));
+        }
+        result
+    }
+}
+
+impl<V: Clone> Drop for FlightGuard<V> {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            {
+                let mut guard = lock_cache(&self.map);
+                guard.remove(&self.key);
+            }
+            let _ = tx.send(Some(Err("请求已取消".to_string())));
+        }
+    }
+}
+
+enum FlightRole<V: Clone> {
+    Leader(FlightGuard<V>),
+    Waiter(WatchRx<V>),
+}
+
+struct InFlight<V> {
+    map: Arc<Mutex<HashMap<String, WatchRx<V>>>>,
+}
+
+impl<V: Clone> InFlight<V> {
+    fn new() -> Self {
+        Self {
+            map: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn enter(&self, key: &str) -> FlightRole<V> {
+        let mut guard = lock_cache(&self.map);
+        if let Some(rx) = guard.get(key) {
+            return FlightRole::Waiter(rx.clone());
+        }
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        guard.insert(key.to_string(), rx);
+        FlightRole::Leader(FlightGuard {
+            map: self.map.clone(),
+            key: key.to_string(),
+            tx: Some(tx),
+        })
+    }
+
+    async fn run<F, Fut>(&self, key: &str, work: F) -> Result<V, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, String>>,
+    {
+        match self.enter(key) {
+            FlightRole::Leader(guard) => {
+                let result = work().await;
+                guard.finish(result)
+            }
+            FlightRole::Waiter(mut rx) => loop {
+                if let Some(res) = rx.borrow_and_update().clone() {
+                    return res;
+                }
+                if rx.changed().await.is_err() {
+                    if let Some(res) = rx.borrow().clone() {
+                        return res;
+                    }
+                    return Err("在途请求中断".to_string());
+                }
+            },
+        }
+    }
+}
+
+pub fn bind_cache_dir(dir: &Path) {
+    if std::fs::create_dir_all(dir).is_ok() {
+        if let Ok(mut guard) = IMG_DISK_DIR.write() {
+            *guard = Some(dir.to_path_buf());
+        }
+    }
+}
+
+fn disk_cache_dir() -> Option<PathBuf> {
+    IMG_DISK_DIR.read().ok().and_then(|g| g.clone())
+}
+
+fn disk_cache_filename(key: &str) -> String {
+    const OFFSET_BASIS: u128 = 0x6c62272e07bb0142_62b821756295c58d;
+    const PRIME: u128 = 0x0000000001000000_000000000000013b;
+    let mut hash = OFFSET_BASIS;
+    for &b in key.as_bytes() {
+        hash ^= b as u128;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:032x}.img")
+}
+
+fn read_disk_image(dir: &Path, key: &str) -> Option<(&'static str, Vec<u8>)> {
+    let path = dir.join(disk_cache_filename(key));
+    let bytes = std::fs::read(&path).ok()?;
+    if let Some(kind) = image_kind(&bytes) {
+        // 近似 LRU：命中超过 60 秒才刷新 mtime，避免每次读都触发磁盘元数据写
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta
+                .modified()
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .is_some_and(|age| age.as_secs() > 60)
+            {
+                if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+                    let _ = file.set_modified(SystemTime::now());
+                }
+            }
+        }
+        Some((kind, bytes))
+    } else {
+        let _ = std::fs::remove_file(&path);
+        None
+    }
+}
+
+fn prune_disk_cache(dir: &Path, max_files: usize, max_bytes: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(PathBuf, usize, SystemTime)> = Vec::new();
+    let mut total_bytes = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("img") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        total_bytes = total_bytes.saturating_add(len);
+        files.push((path, len, modified));
+    }
+    if files.len() <= max_files && total_bytes <= max_bytes {
+        return;
+    }
+    files.sort_unstable_by_key(|(_, _, modified)| *modified);
+    let mut remaining = files.len();
+    for (path, len, _) in files {
+        if remaining <= max_files && total_bytes <= max_bytes {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            remaining = remaining.saturating_sub(1);
+            total_bytes = total_bytes.saturating_sub(len);
+        }
+    }
+}
+
+fn write_disk_image(dir: &Path, key: &str, bytes: &[u8]) {
+    if bytes.is_empty() || bytes.len() > IMG_CACHE_MAX_BYTES {
+        return;
+    }
+    let final_name = disk_cache_filename(key);
+    let final_path = dir.join(&final_name);
+    let seq = DISK_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!("{final_name}.{}.{seq}.tmp", std::process::id()));
+    if std::fs::write(&tmp_path, bytes).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
+    if std::fs::rename(&tmp_path, &final_path).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
+    if DISK_WRITES
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(32)
+    {
+        prune_disk_cache(dir, IMG_DISK_MAX_FILES, IMG_DISK_MAX_BYTES);
+    }
+}
+
+fn clear_disk_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".img") || name.contains(".tmp") {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn disk_cache_stats(dir: &Path) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("img") {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    count += 1;
+                    bytes = bytes.saturating_add(usize::try_from(meta.len()).unwrap_or(usize::MAX));
+                }
+            }
+        }
+    }
+    (count, bytes)
+}
+
 /* ───────────────────────── AES ───────────────────────── */
 
-fn aes_cbc_decrypt(data: &[u8]) -> Option<Vec<u8>> {
+fn aes_cbc_decrypt(mut data: Vec<u8>) -> Option<Vec<u8>> {
     if data.is_empty() || !data.len().is_multiple_of(16) {
         return None;
     }
     let cipher = Aes128::new_from_slice(IMG_KEY).ok()?;
     let mut prev = [0u8; 16];
     prev.copy_from_slice(IMG_IV);
-    let mut out = Vec::with_capacity(data.len());
-    for chunk in data.chunks(16) {
+    for chunk in data.chunks_exact_mut(16) {
         let mut ct = [0u8; 16];
         ct.copy_from_slice(chunk);
         let mut block = ct;
         cipher.decrypt_block((&mut block).into());
         for i in 0..16 {
-            out.push(block[i] ^ prev[i]);
+            chunk[i] = block[i] ^ prev[i];
         }
         prev = ct;
     }
-    Some(out)
+    Some(data)
 }
 
 fn strip_padding(mut buf: Vec<u8>) -> Vec<u8> {
@@ -227,13 +510,255 @@ fn decode_image_bytes(bytes: Vec<u8>) -> Result<(&'static str, Vec<u8>), String>
     if let Some(kind) = image_kind(&bytes) {
         return Ok((kind, bytes));
     }
-    let dec = aes_cbc_decrypt(&bytes).ok_or_else(|| "封面解密失败".to_string())?;
+    let dec = aes_cbc_decrypt(bytes).ok_or_else(|| "封面解密失败".to_string())?;
     let plain = strip_padding(dec);
     let kind = image_kind(&plain).ok_or_else(|| "封面内容格式无效".to_string())?;
     Ok((kind, plain))
 }
 
-/// 取封面：命中缓存直接返回，否则下载并按需解密。
+fn is_volatile_image_param(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "auth_key" | "sign" | "sig" | "token" | "expires" | "expire" | "t" | "ts" | "r"
+    )
+}
+
+fn image_cache_key(resolved: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(resolved) else {
+        return resolved.to_string();
+    };
+    parsed.set_fragment(None);
+    if parsed.query().is_some() {
+        let kept: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(k, _)| !is_volatile_image_param(k))
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        if kept.is_empty() {
+            parsed.set_query(None);
+        } else {
+            let mut pairs = parsed.query_pairs_mut();
+            pairs.clear();
+            for (k, v) in kept {
+                pairs.append_pair(&k, &v);
+            }
+        }
+    }
+    parsed.into()
+}
+
+fn parse_cdn_webp_config(raw: &str) -> Option<CdnWebpConfig> {
+    let trimmed = raw.trim_start_matches('\u{feff}').trim();
+    let json_text = if let Some(rest) = trimmed.strip_prefix("define(") {
+        let without_semi = rest.trim_end().strip_suffix(';').unwrap_or(rest).trim_end();
+        without_semi.strip_suffix(')')?.trim()
+    } else {
+        trimmed
+    };
+    let val: serde_json::Value = serde_json::from_str(json_text).ok()?;
+    let webp = val.get("webp")?;
+    if webp.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let base_raw = webp.get("base").and_then(|v| v.as_str())?.trim();
+    let base_url = url::Url::parse(base_raw).ok()?;
+    if base_url.scheme() != "https"
+        || !base_url.username().is_empty()
+        || base_url.password().is_some()
+        || base_url.query().is_some()
+        || base_url.fragment().is_some()
+        || crate::network_policy::parse_target(base_raw).is_err()
+    {
+        return None;
+    }
+    let hosts: Vec<String> = webp
+        .get("hosts")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if hosts.is_empty() {
+        return None;
+    }
+    Some(CdnWebpConfig {
+        base: base_raw.trim_end_matches('/').to_string(),
+        hosts,
+    })
+}
+
+fn has_webp_convertible_ext(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or("");
+    let Some((_, ext)) = file_name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "jpg" | "jpeg" | "png" | "bmp"
+    )
+}
+
+fn looks_like_webp_eligible_path(resolved: &str) -> bool {
+    let Ok(url) = url::Url::parse(resolved) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && !url.path().starts_with("/static/")
+        && has_webp_convertible_ext(url.path())
+}
+
+fn webp_candidate_url(resolved: &str, site_origin: &str, cfg: &CdnWebpConfig) -> Option<String> {
+    let url = url::Url::parse(resolved).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !cfg.hosts.iter().any(|h| h == &host) {
+        return None;
+    }
+    let path = url.path();
+    if !has_webp_convertible_ext(path) || path.starts_with("/static/") {
+        return None;
+    }
+    if path.starts_with("/upload/")
+        && url::Url::parse(site_origin).ok().is_some_and(|origin| {
+            origin.origin().ascii_serialization() == url.origin().ascii_serialization()
+        })
+    {
+        return None;
+    }
+    let candidate = format!("{}{path}.webp", cfg.base);
+    if candidate == resolved || crate::network_policy::parse_target(&candidate).is_err() {
+        return None;
+    }
+    Some(candidate)
+}
+
+async fn cdn_webp_config(origin: &str) -> Option<CdnWebpConfig> {
+    let base_origin = origin.trim().trim_end_matches('/');
+    let key = base_origin.to_ascii_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    let now = Instant::now();
+    if let Some((expires, cached)) = lock_cache(&CDN_WEBP_CACHE).get(&key) {
+        if now < *expires {
+            return cached.clone();
+        }
+    }
+    let _flight = CDN_WEBP_FLIGHT.lock().await;
+    let now = Instant::now();
+    if let Some((expires, cached)) = lock_cache(&CDN_WEBP_CACHE).get(&key) {
+        if now < *expires {
+            return cached.clone();
+        }
+    }
+    let cfg_url = format!("{base_origin}/cdn-config.js");
+    let referer = format!("{base_origin}/");
+    let parsed = match get(&cfg_url, Duration::from_secs(5), Some("*/*"), Some(&referer)).await {
+        Ok(resp) if resp.status().is_success() => read_text_limited(resp, MAX_TEXT_BYTES)
+            .await
+            .ok()
+            .and_then(|text| parse_cdn_webp_config(&text)),
+        _ => None,
+    };
+    let ttl = if parsed.is_some() {
+        CDN_CONFIG_TTL
+    } else {
+        CDN_CONFIG_ERR_TTL
+    };
+    let expires = Instant::now() + ttl;
+    let mut cache = lock_cache(&CDN_WEBP_CACHE);
+    let now = Instant::now();
+    cache.retain(|_, (exp, _)| now < *exp);
+    if cache.len() >= 16 {
+        cache.clear();
+    }
+    cache.insert(key, (expires, parsed.clone()));
+    parsed
+}
+
+fn is_webp_host_in_cooldown(url: &str) -> bool {
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        return false;
+    };
+    let now = Instant::now();
+    let mut map = lock_cache(&WEBP_HOST_COOLDOWN);
+    match map.get(&host).copied() {
+        Some(until) if now < until => true,
+        Some(_) => {
+            map.remove(&host);
+            false
+        }
+        None => false,
+    }
+}
+
+fn mark_webp_host_cooldown(url: &str) {
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        return;
+    };
+    let now = Instant::now();
+    let until = now + WEBP_HOST_COOLDOWN_TTL;
+    let mut map = lock_cache(&WEBP_HOST_COOLDOWN);
+    if map.len() >= 32 {
+        map.retain(|_, exp| now < *exp);
+    }
+    map.insert(host, until);
+}
+
+async fn fetch_and_decode_image(
+    resolved: &str,
+    webp_url: Option<String>,
+) -> Result<(&'static str, Vec<u8>), String> {
+    if let Some(candidate_url) = webp_url {
+        let permit = IMG_NET_SEM
+            .acquire()
+            .await
+            .map_err(|_| "图片并发控制关闭".to_string())?;
+        // 与官网 crypto-image.js 的 candidateTimeout 策略一致：短超时单次尝试，慢或失败立即冷却并回退原图。
+        let fetched =
+            fetch_bytes_with_timeout_attempts(&candidate_url, WEBP_CANDIDATE_TIMEOUT, 1).await;
+        drop(permit);
+        match fetched {
+            Ok((_, bytes)) => {
+                if let Ok(Ok(decoded)) =
+                    tokio::task::spawn_blocking(move || decode_image_bytes(bytes)).await
+                {
+                    return Ok(decoded);
+                }
+            }
+            Err(err) => {
+                if !err.starts_with("HTTP 404") && !err.starts_with("HTTP 410") {
+                    mark_webp_host_cooldown(&candidate_url);
+                }
+            }
+        }
+    }
+    let permit = IMG_NET_SEM
+        .acquire()
+        .await
+        .map_err(|_| "图片并发控制关闭".to_string())?;
+    let (_, bytes) = fetch_bytes(resolved).await?;
+    drop(permit);
+    tokio::task::spawn_blocking(move || decode_image_bytes(bytes))
+        .await
+        .map_err(|_| "封面解密任务中断".to_string())?
+}
+
+/// 取封面：先查内存与磁盘缓存，再合并在途请求并优先走站点 /cdn-config.js 的 WebP CDN，失败时自动回退原地址。
 pub async fn load_image(url: &str) -> Result<(String, Arc<Vec<u8>>), String> {
     let trimmed = url.trim();
     let resolved = if trimmed.starts_with("//") {
@@ -243,19 +768,64 @@ pub async fn load_image(url: &str) -> Result<(String, Arc<Vec<u8>>), String> {
     } else {
         trimmed.to_string()
     };
-    if let Some(hit) = lock_cache(&IMG_CACHE).get(&resolved) {
+    let cache_key = image_cache_key(&resolved);
+    if let Some(hit) = lock_cache(&IMG_CACHE).get(&cache_key) {
         if let Some(kind) = image_kind(&hit) {
             return Ok((kind.to_string(), hit));
         }
     }
-    let (_, bytes) = fetch_bytes(&resolved).await?;
-    let (kind, plain) = tokio::task::spawn_blocking(move || decode_image_bytes(bytes))
+    IMG_INFLIGHT
+        .run(&cache_key, || {
+            let resolved = resolved.clone();
+            let cache_key = cache_key.clone();
+            async move {
+                if let Some(hit) = lock_cache(&IMG_CACHE).get(&cache_key) {
+                    if let Some(kind) = image_kind(&hit) {
+                        return Ok((kind.to_string(), hit));
+                    }
+                }
+                if let Some(dir) = disk_cache_dir() {
+                    let key_for_disk = cache_key.clone();
+                    let dir_for_disk = dir.clone();
+                    if let Ok(Some((kind, plain))) = tokio::task::spawn_blocking(move || {
+                        read_disk_image(&dir_for_disk, &key_for_disk)
+                    })
+                    .await
+                    {
+                        let len = plain.len();
+                        let arc = Arc::new(plain);
+                        lock_cache(&IMG_CACHE).put(cache_key, arc.clone(), len);
+                        return Ok((kind.to_string(), arc));
+                    }
+                }
+                let origin = crate::net::base();
+                let webp_url = if looks_like_webp_eligible_path(&resolved) {
+                    cdn_webp_config(&origin)
+                        .await
+                        .and_then(|cfg| webp_candidate_url(&resolved, &origin, &cfg))
+                        .filter(|u| !is_webp_host_in_cooldown(u))
+                } else {
+                    None
+                };
+                let (kind, plain) = fetch_and_decode_image(&resolved, webp_url).await?;
+                let len = plain.len();
+                let arc = Arc::new(plain);
+                lock_cache(&IMG_CACHE).put(cache_key.clone(), arc.clone(), len);
+                if let Some(dir) = disk_cache_dir() {
+                    if len <= IMG_CACHE_MAX_BYTES {
+                        let arc_for_disk = arc.clone();
+                        tokio::spawn(async move {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                write_disk_image(&dir, &cache_key, &arc_for_disk);
+                            })
+                            .await;
+                        });
+                    }
+                }
+                Ok((kind.to_string(), arc))
+            }
+        })
         .await
-        .map_err(|_| "封面解密任务中断".to_string())??;
-    let len = plain.len();
-    let arc = Arc::new(plain);
-    lock_cache(&IMG_CACHE).put(resolved, arc.clone(), len);
-    Ok((kind.to_string(), arc))
 }
 
 /* ───────────────────────── HLS ───────────────────────── */
@@ -327,22 +897,34 @@ fn rewrite_uri_attr(line: &str, prefix: &str) -> String {
     map_uri_attributes(line, |uri| format!("{prefix}/seg?u={}", enc(uri)))
 }
 
-/// 取 m3u8 并把 key / 子列表 / 分片地址改写到本地协议。
+/// 取 m3u8 并把 key / 子列表 / 分片地址改写到本地协议（合并在途请求）。
 pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, String> {
     let cache_key = format!("{prefix}|{url}");
     if let Some(hit) = lock_cache(&PL_CACHE).get(&cache_key) {
         return Ok(hit);
     }
-    let (_, bytes) = fetch_bytes(url).await?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "播放列表不是 UTF-8 文本")?;
-    if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
-        return Err("响应不是 HLS 播放列表".into());
-    }
-    let rewritten = rewrite_playlist(url, text, prefix);
-    let len = rewritten.len();
-    let arc = Arc::new(rewritten);
-    lock_cache(&PL_CACHE).put(cache_key, arc.clone(), len);
-    Ok(arc)
+    PL_INFLIGHT
+        .run(&cache_key, || {
+            let url = url.to_string();
+            let prefix = prefix.to_string();
+            let cache_key = cache_key.clone();
+            async move {
+                if let Some(hit) = lock_cache(&PL_CACHE).get(&cache_key) {
+                    return Ok(hit);
+                }
+                let (_, bytes) = fetch_bytes(&url).await?;
+                let text = std::str::from_utf8(&bytes).map_err(|_| "播放列表不是 UTF-8 文本")?;
+                if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
+                    return Err("响应不是 HLS 播放列表".into());
+                }
+                let rewritten = rewrite_playlist(&url, text, &prefix);
+                let len = rewritten.len();
+                let arc = Arc::new(rewritten);
+                lock_cache(&PL_CACHE).put(cache_key, arc.clone(), len);
+                Ok(arc)
+            }
+        })
+        .await
 }
 
 fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
@@ -397,16 +979,8 @@ fn absolutize_uri_in_attr(base: &str, line: &str) -> String {
     map_uri_attributes(line, |uri| absolutize(base, uri))
 }
 
-/// 加载分片或 AES Key（带内存缓存，避免拖动进度条时重复拉取同一 Key 或分片导致卡顿）。
-pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), String> {
-    if let Some((ctype, hit)) = lock_cache(&KEY_CACHE).get(url) {
-        return Ok((Some(ctype), hit));
-    }
-    if let Some((ctype, hit)) = lock_cache(&SEG_CACHE).get(url) {
-        return Ok((Some(ctype), hit));
-    }
-    let (ctype, bytes) = fetch_bytes(url).await?;
-    let mime = ctype.clone().unwrap_or_else(|| {
+fn resolve_segment_mime(url: &str, ctype: Option<String>) -> String {
+    ctype.unwrap_or_else(|| {
         let p = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
         if p.ends_with(".ts") {
             "video/mp2t".to_string()
@@ -415,34 +989,198 @@ pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), S
         } else {
             "application/octet-stream".to_string()
         }
-    });
+    })
+}
+
+fn cache_segment(url: &str, mime: &str, bytes: Vec<u8>) -> Arc<Vec<u8>> {
     let len = bytes.len();
     let arc = Arc::new(bytes);
     if len <= 65536 {
-        lock_cache(&KEY_CACHE).put(url.to_string(), (mime.clone(), arc.clone()), len);
+        lock_cache(&KEY_CACHE).put(url.to_string(), (mime.to_string(), arc.clone()), len);
     } else if len <= SEG_CACHE_MAX_BYTES {
-        lock_cache(&SEG_CACHE).put(url.to_string(), (mime.clone(), arc.clone()), len);
+        lock_cache(&SEG_CACHE).put(url.to_string(), (mime.to_string(), arc.clone()), len);
     }
-    Ok((Some(mime), arc))
+    arc
 }
 
-/// 清空封面 / 播放列表 / 分片内存缓存
+fn cached_segment(url: &str) -> Option<(Option<String>, Arc<Vec<u8>>)> {
+    if let Some((ctype, hit)) = lock_cache(&KEY_CACHE).get(url) {
+        return Some((Some(ctype), hit));
+    }
+    if let Some((ctype, hit)) = lock_cache(&SEG_CACHE).get(url) {
+        return Some((Some(ctype), hit));
+    }
+    None
+}
+
+/// 加载分片或 AES Key（带内存缓存与在途去重，避免拖动进度条或预热时重复拉取同一 Key 或分片）。
+pub async fn load_segment(url: &str) -> Result<(Option<String>, Arc<Vec<u8>>), String> {
+    if let Some(hit) = cached_segment(url) {
+        return Ok(hit);
+    }
+    SEG_INFLIGHT
+        .run(url, || {
+            let url = url.to_string();
+            async move {
+                if let Some(hit) = cached_segment(&url) {
+                    return Ok(hit);
+                }
+                let (ctype, bytes) = fetch_bytes(&url).await?;
+                let mime = resolve_segment_mime(&url, ctype);
+                let arc = cache_segment(&url, &mime, bytes);
+                Ok((Some(mime), arc))
+            }
+        })
+        .await
+}
+
+fn unwrap_proxy_seg_url(uri: &str, prefix: &str) -> Option<String> {
+    let seg_prefix = format!("{prefix}/seg?u=");
+    let encoded = uri.trim().strip_prefix(&seg_prefix)?;
+    let decoded = dec(encoded);
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn extract_first_key_and_segment(rewritten: &str, prefix: &str) -> (Option<String>, Option<String>) {
+    let mut key_uri = None;
+    let mut seg_uri = None;
+    for raw in rewritten.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('#') {
+            if key_uri.is_none() && line.starts_with("#EXT-X-KEY:") {
+                if let Some((_, attrs)) = hls_attributes(line) {
+                    for attr in attrs {
+                        if let Some((k, v)) = attr.split_once('=') {
+                            if k.trim() == "URI" {
+                                if let Some(u) = v
+                                    .trim()
+                                    .strip_prefix('"')
+                                    .and_then(|s| s.strip_suffix('"'))
+                                {
+                                    key_uri = unwrap_proxy_seg_url(u, prefix);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if seg_uri.is_none() {
+            seg_uri = unwrap_proxy_seg_url(line, prefix);
+        }
+        if key_uri.is_some() && seg_uri.is_some() {
+            break;
+        }
+    }
+    (key_uri, seg_uri)
+}
+
+fn is_direct_media_url(url: &str) -> bool {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    matches!(
+        path.rsplit('.').next(),
+        Some("mp4" | "webm" | "mov" | "m4v" | "ogv" | "ogg")
+    )
+}
+
+/// 后台预热即将切换的 HLS 流：清单 → 首条 Key（或嵌套子清单）→ 首条分片。
+pub fn prewarm_hls(url: &str) {
+    let trimmed = url.trim();
+    if trimmed.is_empty()
+        || (!trimmed.starts_with("http://") && !trimmed.starts_with("https://"))
+        || is_direct_media_url(trimmed)
+    {
+        return;
+    }
+    let url = trimmed.to_string();
+    let gen = PREWARM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    tokio::spawn(async move {
+        let Ok(_permit) = PREWARM_SEM.acquire().await else {
+            return;
+        };
+        if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        let Ok(playlist) = load_playlist(&url, LOCAL_ORIGIN).await else {
+            return;
+        };
+        if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        let (key_uri, seg_uri) = extract_first_key_and_segment(&playlist, LOCAL_ORIGIN);
+        if let Some(key) = key_uri {
+            if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            let _ = load_segment(&key).await;
+        }
+        if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        let Some(seg) = seg_uri else {
+            return;
+        };
+        let Ok((ctype, bytes)) = load_segment(&seg).await else {
+            return;
+        };
+        if is_playlist_payload(ctype.as_deref(), &bytes) {
+            if let Ok(text) = std::str::from_utf8(bytes.as_slice()) {
+                let nested = rewrite_playlist(&seg, text, LOCAL_ORIGIN);
+                let (nested_key, nested_seg) = extract_first_key_and_segment(&nested, LOCAL_ORIGIN);
+                if let Some(key) = nested_key {
+                    if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    let _ = load_segment(&key).await;
+                }
+                if PREWARM_GEN.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+                if let Some(first_seg) = nested_seg {
+                    let _ = load_segment(&first_seg).await;
+                }
+            }
+        }
+    });
+}
+
+/// 清空封面 / 播放列表 / 分片内存缓存及封面磁盘缓存
 pub fn clear_caches() {
     lock_cache(&IMG_CACHE).clear();
     lock_cache(&PL_CACHE).clear();
     lock_cache(&KEY_CACHE).clear();
     lock_cache(&SEG_CACHE).clear();
+    lock_cache(&CDN_WEBP_CACHE).clear();
+    lock_cache(&WEBP_HOST_COOLDOWN).clear();
+    if let Some(dir) = disk_cache_dir() {
+        clear_disk_dir(&dir);
+    }
 }
 
-/// 统计当前内存缓存条目数与字节总数
+/// 统计当前内存缓存与封面磁盘缓存的条目数与字节总数
 pub fn cache_stats() -> (usize, usize) {
-    let img = lock_cache(&IMG_CACHE);
-    let pl = lock_cache(&PL_CACHE);
-    let key = lock_cache(&KEY_CACHE);
-    let seg = lock_cache(&SEG_CACHE);
-    let entries = img.entries.len() + pl.entries.len() + key.entries.len() + seg.entries.len();
-    let bytes = img.total_bytes + pl.total_bytes + key.total_bytes + seg.total_bytes;
-    (entries, bytes)
+    let (mem_entries, mem_bytes) = {
+        let img = lock_cache(&IMG_CACHE);
+        let pl = lock_cache(&PL_CACHE);
+        let key = lock_cache(&KEY_CACHE);
+        let seg = lock_cache(&SEG_CACHE);
+        (
+            img.entries.len() + pl.entries.len() + key.entries.len() + seg.entries.len(),
+            img.total_bytes + pl.total_bytes + key.total_bytes + seg.total_bytes,
+        )
+    };
+    let (disk_entries, disk_bytes) = disk_cache_dir()
+        .map(|dir| disk_cache_stats(&dir))
+        .unwrap_or((0, 0));
+    (mem_entries + disk_entries, mem_bytes.saturating_add(disk_bytes))
 }
 
 /* ───────────────────────── 协议响应 ───────────────────────── */
@@ -516,6 +1254,81 @@ fn parse_byte_range(header: &str, total: usize) -> Result<Option<(usize, usize)>
     Ok(Some((start, end.min(total - 1))))
 }
 
+fn respond_partial(
+    ctype: &str,
+    content_range: &str,
+    body: Vec<u8>,
+    cache: &str,
+) -> Response<Vec<u8>> {
+    let len = body.len().to_string();
+    Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header("Content-Type", ctype)
+        .header("Content-Length", len)
+        .header("Content-Range", content_range)
+        .header("Accept-Ranges", "bytes")
+        .header("X-Content-Type-Options", "nosniff")
+        .header(
+            "Access-Control-Expose-Headers",
+            "Content-Length, Content-Type, Accept-Ranges, Content-Range",
+        )
+        .header("Cache-Control", cache)
+        .body(body)
+        .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+fn respond_416(content_range: &str) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+        .header("Content-Type", "text/plain")
+        .header("Content-Length", "0")
+        .header("Content-Range", content_range)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "no-store")
+        .body(Vec::new())
+        .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+fn normalize_upstream_range(header: &str, max_chunk: usize) -> Option<String> {
+    if max_chunk == 0 {
+        return None;
+    }
+    let trimmed = header.trim();
+    let (unit, spec) = trimmed.split_once('=')?;
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return None;
+    }
+    let spec = spec.trim();
+    if spec.is_empty() || spec.contains(',') {
+        return None;
+    }
+    let (raw_start, raw_end) = spec.split_once('-')?;
+    let raw_start = raw_start.trim();
+    let raw_end = raw_end.trim();
+    if raw_start.is_empty() && raw_end.is_empty() {
+        return None;
+    }
+    if raw_start.is_empty() {
+        let suffix = raw_end.parse::<usize>().ok()?;
+        if suffix == 0 || suffix > MAX_MEDIA_BYTES {
+            return None;
+        }
+        return Some(format!("bytes=-{suffix}"));
+    }
+    let start = raw_start.parse::<usize>().ok()?;
+    if raw_end.is_empty() {
+        let end = start.saturating_add(max_chunk - 1);
+        return Some(format!("bytes={start}-{end}"));
+    }
+    let end = raw_end.parse::<usize>().ok()?;
+    if end < start {
+        return None;
+    }
+    let max_end = start.saturating_add(MAX_MEDIA_BYTES - 1);
+    let capped = end.min(max_end);
+    Some(format!("bytes={start}-{capped}"))
+}
+
 fn respond_bytes(
     ctype: &str,
     body: Arc<Vec<u8>>,
@@ -526,39 +1339,23 @@ fn respond_bytes(
         match parse_byte_range(range_header, body.len()) {
             Ok(Some((start, end))) => {
                 let slice = body[start..=end].to_vec();
-                let len = slice.len().to_string();
                 let content_range = format!("bytes {start}-{end}/{}", body.len());
-                return Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header("Content-Type", ctype)
-                    .header("Content-Length", len)
-                    .header("Content-Range", content_range)
-                    .header("Accept-Ranges", "bytes")
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header(
-                        "Access-Control-Expose-Headers",
-                        "Content-Length, Content-Type, Accept-Ranges, Content-Range",
-                    )
-                    .header("Cache-Control", cache)
-                    .body(slice)
-                    .unwrap_or_else(|_| Response::new(Vec::new()));
+                return respond_partial(ctype, &content_range, slice, cache);
             }
             Err(()) => {
-                return Response::builder()
-                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .header("Content-Type", "text/plain")
-                    .header("Content-Length", "0")
-                    .header("Content-Range", format!("bytes */{}", body.len()))
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header("Cache-Control", "no-store")
-                    .body(Vec::new())
-                    .unwrap_or_else(|_| Response::new(Vec::new()));
+                return respond_416(&format!("bytes */{}", body.len()));
             }
             Ok(None) => {}
         }
     }
     let owned = Arc::try_unwrap(body).unwrap_or_else(|arc| (*arc).clone());
     respond(200, ctype, owned, cache)
+}
+
+fn is_playlist_payload(ctype: Option<&str>, bytes: &[u8]) -> bool {
+    ctype.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
+        || bytes.starts_with(b"#EXTM3U")
+        || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U")
 }
 
 /// 主清单的子清单也经 /seg 返回：必须继续改写，不能把内层 URL 原样交给播放器。
@@ -569,10 +1366,7 @@ fn segment_response(
     origin: &str,
     range: Option<&str>,
 ) -> Response<Vec<u8>> {
-    let playlist = ctype.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
-        || bytes.starts_with(b"#EXTM3U")
-        || bytes.starts_with(b"\xef\xbb\xbf#EXTM3U");
-    if playlist {
+    if is_playlist_payload(ctype, bytes.as_slice()) {
         return match std::str::from_utf8(bytes.as_slice()) {
             Ok(text) => respond(
                 200,
@@ -595,6 +1389,51 @@ fn segment_response(
         "public, max-age=3600",
         range,
     )
+}
+
+async fn handle_segment(target: &str, origin: &str, range: Option<&str>) -> Response<Vec<u8>> {
+    if let Some((ctype, hit)) = cached_segment(target) {
+        return segment_response(target, ctype.as_deref(), hit, origin, range);
+    }
+    if let Some(range_header) = range {
+        if let Some(up_range) = normalize_upstream_range(range_header, RANGE_OPEN_CHUNK) {
+            match fetch_bytes_with_range(target, Some(&up_range)).await {
+                Ok(fetched) => {
+                    if is_playlist_payload(fetched.content_type.as_deref(), &fetched.bytes) {
+                        return match load_segment(target).await {
+                            Ok((ctype, bytes)) => {
+                                segment_response(target, ctype.as_deref(), bytes, origin, range)
+                            }
+                            Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
+                        };
+                    }
+                    let mime = resolve_segment_mime(target, fetched.content_type);
+                    if fetched.status == 206 {
+                        if let Some(content_range) = fetched.content_range {
+                            return respond_partial(
+                                &mime,
+                                &content_range,
+                                fetched.bytes,
+                                "public, max-age=3600",
+                            );
+                        }
+                    }
+                    let arc = cache_segment(target, &mime, fetched.bytes);
+                    return segment_response(target, Some(&mime), arc, origin, range);
+                }
+                Err(e) if e.starts_with("HTTP 416") => {
+                    return respond_416("bytes */*");
+                }
+                Err(e) => {
+                    return respond(502, "text/plain", e.into_bytes(), "no-store");
+                }
+            }
+        }
+    }
+    match load_segment(target).await {
+        Ok((ctype, bytes)) => segment_response(target, ctype.as_deref(), bytes, origin, range),
+        Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
+    }
 }
 
 /// 统一入口：`<LOCAL_ORIGIN>/img?u=` / `hls?u=` / `seg?u=`
@@ -649,12 +1488,7 @@ pub async fn handle(
             ),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
-        "/seg" => match load_segment(&target).await {
-            Ok((ctype, bytes)) => {
-                segment_response(&target, ctype.as_deref(), bytes, origin, range)
-            }
-            Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
-        },
+        "/seg" => handle_segment(&target, origin, range).await,
         _ => respond(404, "text/plain", b"not found".to_vec(), "no-store"),
     };
     if let Some((started, route, resource)) = log_meta {
@@ -901,7 +1735,7 @@ mod tests {
             prev = out_block;
         }
 
-        let decrypted = aes_cbc_decrypt(&encrypted).expect("decrypt");
+        let decrypted = aes_cbc_decrypt(encrypted).expect("decrypt");
         let stripped = strip_padding(decrypted);
         assert_eq!(stripped, plain);
         assert_eq!(image_kind(&stripped), Some("image/jpeg"));
@@ -964,5 +1798,218 @@ mod tests {
             }
             Err(e) => panic!("image failed: {e}"),
         }
+    }
+
+    #[test]
+    fn image_cache_key_strips_volatile_signature_params_only() {
+        assert_eq!(
+            image_cache_key(
+                "https://pic.drleao.cn/covers/1.jpg?w=480&auth_key=123&Sign=abc&r=2#frag"
+            ),
+            "https://pic.drleao.cn/covers/1.jpg?w=480"
+        );
+        assert_eq!(
+            image_cache_key("https://pic.drleao.cn/covers/1.jpg?auth_key=123&t=999"),
+            "https://pic.drleao.cn/covers/1.jpg"
+        );
+    }
+
+    #[test]
+    fn disk_cache_roundtrip_and_clear_works() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "hghub-media-disk-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let key = "https://pic.drleao.cn/covers/test.jpg";
+        let jpeg = b"\xFF\xD8\xFF\xE0valid-jpeg-bytes".to_vec();
+        write_disk_image(&dir, key, &jpeg);
+        assert_eq!(disk_cache_stats(&dir), (1, jpeg.len()));
+        let (kind, read_back) = read_disk_image(&dir, key).expect("disk hit");
+        assert_eq!(kind, "image/jpeg");
+        assert_eq!(read_back, jpeg);
+
+        // 损坏文件自动剔除且不会命中
+        let bad_key = "https://pic.drleao.cn/covers/corrupt.jpg";
+        std::fs::write(dir.join(disk_cache_filename(bad_key)), b"<html>broken</html>").unwrap();
+        assert!(read_disk_image(&dir, bad_key).is_none());
+        assert!(!dir.join(disk_cache_filename(bad_key)).exists());
+
+        // 超过数量限制时淘汰旧文件
+        for i in 0..4 {
+            write_disk_image(&dir, &format!("https://pic.drleao.cn/{i}.jpg"), &jpeg);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        prune_disk_cache(&dir, 2, usize::MAX);
+        assert_eq!(disk_cache_stats(&dir).0, 2);
+
+        clear_disk_dir(&dir);
+        assert_eq!(disk_cache_stats(&dir), (0, 0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn normalize_upstream_range_caps_open_ended_and_preserves_explicit_ranges() {
+        assert_eq!(
+            normalize_upstream_range("bytes=0-", 1024).as_deref(),
+            Some("bytes=0-1023")
+        );
+        assert_eq!(
+            normalize_upstream_range("bytes=500-", 1024).as_deref(),
+            Some("bytes=500-1523")
+        );
+        assert_eq!(
+            normalize_upstream_range("bytes=0-1", 1024).as_deref(),
+            Some("bytes=0-1")
+        );
+        assert_eq!(
+            normalize_upstream_range("bytes=-512", 1024).as_deref(),
+            Some("bytes=-512")
+        );
+        assert_eq!(
+            normalize_upstream_range("bytes=0-999999999", 1024).as_deref(),
+            Some(format!("bytes=0-{}", MAX_MEDIA_BYTES - 1)).as_deref()
+        );
+        assert!(normalize_upstream_range("bytes=0-1, 2-3", 1024).is_none());
+        assert!(normalize_upstream_range("bytes=10-5", 1024).is_none());
+        assert!(normalize_upstream_range("items=0-5", 1024).is_none());
+    }
+
+    #[tokio::test]
+    async fn inflight_coalesces_concurrent_work() {
+        use std::sync::atomic::AtomicUsize;
+
+        let flight = Arc::new(InFlight::<u32>::new());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (a, b, c) = tokio::join!(
+            flight.run("k", || {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    Ok(7)
+                }
+            }),
+            flight.run("k", || {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(99)
+                }
+            }),
+            flight.run("k", || {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(100)
+                }
+            }),
+        );
+        assert_eq!(a.unwrap(), 7);
+        assert_eq!(b.unwrap(), 7);
+        assert_eq!(c.unwrap(), 7);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+
+        // 领导者被取消时，等待者立即收到取消错误而不死锁
+        let cancelled_flight = Arc::new(InFlight::<u32>::new());
+        let FlightRole::Leader(guard) = cancelled_flight.enter("abort") else {
+            unreachable!();
+        };
+        let waiter_flight = cancelled_flight.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_flight
+                .run("abort", || async { Ok(1) })
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+        assert!(waiter.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn extract_first_key_and_segment_from_rewritten_playlist() {
+        let raw = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin?auth_key=1\"\n#EXTINF:4,\nseg0.ts?auth_key=1\n#EXTINF:4,\nseg1.ts\n";
+        let rewritten = rewrite_playlist("https://cdn.example/v/list.m3u8", raw, LOCAL_ORIGIN);
+        let (key, seg) = extract_first_key_and_segment(&rewritten, LOCAL_ORIGIN);
+        assert_eq!(
+            key.as_deref(),
+            Some("https://cdn.example/v/key.bin?auth_key=1")
+        );
+        assert_eq!(
+            seg.as_deref(),
+            Some("https://cdn.example/v/seg0.ts?auth_key=1")
+        );
+    }
+
+    #[test]
+    fn parse_cdn_webp_config_handles_amd_define_and_validates_base() {
+        let raw = r#"define({"imgEnabled":false,"webp":{"enabled":true,"base":"https://new2.qnlycc.cn/","hosts":["pic.qnlycc.cn","HUANGGUOAI.COM"]}});"#;
+        let parsed = parse_cdn_webp_config(raw).expect("valid cdn-config");
+        assert_eq!(parsed.base, "https://new2.qnlycc.cn");
+        assert_eq!(
+            parsed.hosts,
+            vec!["pic.qnlycc.cn".to_string(), "huangguoai.com".to_string()]
+        );
+
+        assert!(parse_cdn_webp_config(r#"{"webp":{"enabled":false,"base":"https://new2.qnlycc.cn","hosts":["pic.qnlycc.cn"]}}"#).is_none());
+        assert!(parse_cdn_webp_config(r#"define({"webp":{"enabled":true,"base":"http://new2.qnlycc.cn","hosts":["pic.qnlycc.cn"]}});"#).is_none());
+        assert!(parse_cdn_webp_config(r#"define({"webp":{"enabled":true,"base":"https://127.0.0.1","hosts":["pic.qnlycc.cn"]}});"#).is_none());
+        assert!(parse_cdn_webp_config(r#"define({"webp":{"enabled":true,"base":"https://new2.qnlycc.cn","hosts":[]}});"#).is_none());
+    }
+
+    #[test]
+    fn webp_candidate_url_matches_upstream_rules() {
+        let cfg = CdnWebpConfig {
+            base: "https://new2.qnlycc.cn".into(),
+            hosts: vec!["pic.qnlycc.cn".into(), "huangguoai.com".into()],
+        };
+        assert_eq!(
+            webp_candidate_url(
+                "https://pic.qnlycc.cn/upload_01/upload/20260924/a.jpg?auth_key=123",
+                "https://huangguoai.com",
+                &cfg,
+            )
+            .as_deref(),
+            Some("https://new2.qnlycc.cn/upload_01/upload/20260924/a.jpg.webp")
+        );
+        assert_eq!(
+            webp_candidate_url(
+                "https://huangguoai.com/upload_01/xiao/b.PNG",
+                "https://huangguoai.com",
+                &cfg,
+            )
+            .as_deref(),
+            Some("https://new2.qnlycc.cn/upload_01/xiao/b.PNG.webp")
+        );
+        // Same-origin /upload/ and /static/ assets and non-raster/already-webp files are skipped
+        assert!(webp_candidate_url(
+            "https://huangguoai.com/upload/local.jpg",
+            "https://huangguoai.com",
+            &cfg
+        )
+        .is_none());
+        assert!(webp_candidate_url(
+            "https://pic.qnlycc.cn/static/web/images/cover-placeholder.png",
+            "https://huangguoai.com",
+            &cfg
+        )
+        .is_none());
+        assert!(webp_candidate_url(
+            "https://pic.qnlycc.cn/upload_01/a.webp",
+            "https://huangguoai.com",
+            &cfg
+        )
+        .is_none());
+        assert!(webp_candidate_url(
+            "https://other.cdn.example/upload_01/a.jpg",
+            "https://huangguoai.com",
+            &cfg
+        )
+        .is_none());
     }
 }

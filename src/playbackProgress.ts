@@ -64,3 +64,41 @@ export function useProgress(bus?: PlaybackProgressBus): ProgressSnapshot | null 
     bus ? bus.get : getNull,
   );
 }
+
+export type ScrubSnapshot = { pct: number; target: number; delta: number };
+
+export type ScrubBus = {
+  get: () => ScrubSnapshot | null;
+  set: (next: ScrubSnapshot | null) => void;
+  subscribe: (fn: () => void) => () => void;
+};
+
+/** 独立横拖预览总线：拖动视频画面时高频刷新预览浮层与进度线，避免触发 Feed 整树重渲染 */
+export function createScrubBus(): ScrubBus {
+  let current: ScrubSnapshot | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    set: (next) => {
+      if (
+        current === next ||
+        (current && next && current.pct === next.pct && current.target === next.target && current.delta === next.delta)
+      ) {
+        return;
+      }
+      current = next;
+      listeners.forEach((fn) => fn());
+    },
+    subscribe: (fn) => {
+      listeners.add(fn);
+      return () => { listeners.delete(fn); };
+    },
+  };
+}
+
+export function useScrub(bus?: ScrubBus): ScrubSnapshot | null {
+  return useSyncExternalStore(
+    bus ? bus.subscribe : noopSubscribe,
+    bus ? bus.get : getNull,
+  );
+}

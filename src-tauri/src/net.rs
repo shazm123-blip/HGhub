@@ -1,7 +1,8 @@
 //! 网络层：与上游站点对话。
 //!
-//! 站点把全部 `/api/**` 调用收敛成 `POST /api/edge/request` 的信封，
-//! 我们只实现这一个入口，其余接口都是「填 path」。
+//! 站点把全部 `/api/**` 调用收敛成按分组划分的网关入口
+//! （`/api/public/request`、`/api/dynamic/request`、`/api/playback/request`、`/api/user/request`），
+//! 并使用 `dx150-edge-v1` 加密或公开 JSON 通道；我们只实现这组入口，其余接口都是「填 path」。
 //!
 //! # 代理（用户反馈「浏览器能开、HGhub 打不开」的根因就在这里）
 //!
@@ -19,6 +20,7 @@
 //! 排查手段：环境变量 `HGHUB_PROXY=http://127.0.0.1:7897` 可强制指定代理，
 //! `net_diag` 命令会输出 DNS/HTTP/环境变量快照。
 
+use crate::edge_crypto::{self, EdgeScope};
 use crate::network_policy;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -103,6 +105,7 @@ pub fn set_base(url: &str, on_change: impl FnOnce()) -> Result<String, String> {
             .and_then(|_| std::fs::rename(&temp, &path));
     }
     if previous != next {
+        edge_crypto::clear_sessions();
         crate::playback_log::record(
             "line.changed",
             json!({
@@ -126,7 +129,7 @@ fn proxy_override() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn client_builder(use_pool: bool) -> reqwest::ClientBuilder {
+fn client_builder(allow_retry: bool) -> reqwest::ClientBuilder {
     let builder = reqwest::Client::builder()
         .user_agent(UA)
         .timeout(Duration::from_secs(20))
@@ -135,12 +138,16 @@ fn client_builder(use_pool: bool) -> reqwest::ClientBuilder {
         .referer(false)
         .gzip(true)
         .brotli(true)
-        .pool_idle_timeout(Duration::from_secs(60));
-    if use_pool {
+        .tcp_nodelay(true)
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .http2_adaptive_window(true)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(8);
+    if allow_retry {
         builder
     } else {
-        // 播放取地址每次发送都要经过会话检查，禁用库内复用连接及重试。
-        builder.pool_max_idle_per_host(0).retry(reqwest::retry::never())
+        // 播放取地址每次发送都要经过会话检查，仅禁用库内自动重试，保留连接池复用。
+        builder.retry(reqwest::retry::never())
     }
 }
 
@@ -149,8 +156,8 @@ fn client_builder(use_pool: bool) -> reqwest::ClientBuilder {
 /// 注意：reqwest 的 `system-proxy` 只在构建时读一次注册表 / 环境变量。代理软件被关掉后，
 /// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，症状是满屏 `tunnel error: failed to create
 /// underlying connection`（浏览器却是通的，因为它每次都重读系统代理）。所以这里允许重建。
-fn build_client(host: &str, addrs: &[SocketAddr], use_pool: bool) -> Result<reqwest::Client, String> {
-    let mut builder = client_builder(use_pool);
+fn build_client(host: &str, addrs: &[SocketAddr], allow_retry: bool) -> Result<reqwest::Client, String> {
+    let mut builder = client_builder(allow_retry);
     if !addrs.is_empty() {
         builder = builder.resolve_to_addrs(host, addrs);
     }
@@ -164,31 +171,73 @@ fn build_client(host: &str, addrs: &[SocketAddr], use_pool: bool) -> Result<reqw
         .map_err(|_| "无法创建 HTTP 客户端".to_string())
 }
 
-const CLIENT_TTL: Duration = Duration::from_secs(30);
-type ClientCache = HashMap<String, (Instant, Arc<reqwest::Client>)>;
+const CLIENT_TTL: Duration = Duration::from_secs(120);
+
+#[derive(Clone)]
+struct CachedClient {
+    expires: Instant,
+    host: String,
+    addrs: Vec<SocketAddr>,
+    http: Arc<reqwest::Client>,
+}
+
+type ClientCache = HashMap<String, CachedClient>;
 static CLIENTS: Lazy<Mutex<ClientCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static CLIENT_FLIGHTS: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn cached_client(cache: &ClientCache, key: &str, now: Instant) -> Option<Arc<reqwest::Client>> {
     cache
         .get(key)
-        .filter(|(expires, _)| now < *expires)
-        .map(|(_, http)| http.clone())
+        .filter(|entry| now < entry.expires)
+        .map(|entry| entry.http.clone())
+}
+
+fn same_addr_set(a: &[SocketAddr], b: &[SocketAddr]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut sa = a.to_vec();
+    let mut sb = b.to_vec();
+    sa.sort_unstable();
+    sb.sort_unstable();
+    sa == sb
+}
+
+fn flight_lock(key: &str) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let mut flights = CLIENT_FLIGHTS.lock().map_err(|_| "HTTP 客户端并发锁失败")?;
+    if flights.len() >= 128 {
+        flights.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    Ok(flights
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone())
 }
 
 /// 缓存按模式、主机和端口隔离；有效期内仅复用已经检查并固定地址的客户端。
-/// 到期后重新检查全部 DNS 答案，不使用旧连接绕过新的目标检查。
-async fn client_for(raw: &str, use_pool: bool) -> Result<(url::Url, Arc<reqwest::Client>), String> {
+/// 到期后重新检查全部 DNS 答案；若解析地址集合未变化，则在保持检查语义的同时复用热连接池。
+async fn client_for(raw: &str, allow_retry: bool) -> Result<(url::Url, Arc<reqwest::Client>), String> {
     let strict = network_policy::strict_security();
     let target = network_policy::parse_target_with_mode(raw, strict)?;
     let host = target.host_str().ok_or("目标缺少主机名")?;
     let port = target.port_or_known_default().ok_or("目标端口无效")?;
-    let key = format!("{strict}:{host}:{port}:{use_pool}");
+    let key = format!("{strict}:{host}:{port}:{allow_retry}");
     {
         let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
         if let Some(http) = cached_client(&cache, &key, Instant::now()) {
             return Ok((target, http));
         }
     }
+    let flight = flight_lock(&key)?;
+    let _guard = flight.lock().await;
+    let previous = {
+        let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
+        if let Some(http) = cached_client(&cache, &key, Instant::now()) {
+            return Ok((target, http));
+        }
+        cache.get(&key).cloned()
+    };
     let skip_local_dns =
         proxy_override().is_some() && matches!(target.host(), Some(url::Host::Domain(_)));
     let addrs = if strict && !skip_local_dns {
@@ -196,18 +245,28 @@ async fn client_for(raw: &str, use_pool: bool) -> Result<(url::Url, Arc<reqwest:
     } else {
         Vec::new()
     };
-    let http = Arc::new(build_client(host, &addrs, use_pool)?);
+    let http = match previous {
+        Some(prev) if same_addr_set(&prev.addrs, &addrs) => prev.http,
+        _ => Arc::new(build_client(host, &addrs, allow_retry)?),
+    };
     let now = Instant::now();
     let mut cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
-    // 同时到达的请求可能已完成解析；不延长已有结果的有效期。
-    let http = cached_client(&cache, &key, now).unwrap_or(http);
-    if !cache.get(&key).is_some_and(|(expires, _)| now < *expires) {
-        cache.retain(|_, (expires, _)| now < *expires);
-        if cache.len() >= 64 {
-            cache.clear();
-        }
-        cache.insert(key, (now + CLIENT_TTL, http.clone()));
+    if let Some(existing) = cached_client(&cache, &key, now) {
+        return Ok((target, existing));
     }
+    cache.retain(|_, entry| now < entry.expires);
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        CachedClient {
+            expires: now + CLIENT_TTL,
+            host: host.to_ascii_lowercase(),
+            addrs,
+            http: http.clone(),
+        },
+    );
     Ok((target, http))
 }
 
@@ -215,14 +274,19 @@ pub fn refresh_client() {
     if let Ok(mut cache) = CLIENTS.lock() {
         cache.clear();
     }
+    if let Ok(mut flights) = CLIENT_FLIGHTS.lock() {
+        flights.clear();
+    }
+    edge_crypto::clear_sessions();
 }
 
 /// 不可信 GET 的统一入口；自动重定向被关闭，每一跳重新检查 URL、DNS 并固定解析地址。
-pub async fn get(
+pub async fn get_with_range(
     raw: &str,
     timeout: Duration,
     accept: Option<&str>,
     referer: Option<&str>,
+    range: Option<&str>,
 ) -> Result<reqwest::Response, String> {
     tokio::time::timeout(timeout, async {
         let policy_error = |phase: &str, error: String| {
@@ -241,7 +305,14 @@ pub async fn get(
             if let Some(value) = referer {
                 request = request.header("Referer", value);
             }
-            let response = request.send().await.map_err(|e| err_text(&e))?;
+            if let Some(value) = range {
+                request = request.header(reqwest::header::RANGE, value);
+            }
+            let response = request.send().await.map_err(|e| {
+                let msg = err_text(&e);
+                heal_client_for(target.as_str(), &msg);
+                msg
+            })?;
             if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 return Ok(response);
             }
@@ -260,6 +331,16 @@ pub async fn get(
     })
     .await
     .map_err(|_| "请求超时".to_string())?
+}
+
+/// 不可信 GET 的统一入口；自动重定向被关闭，每一跳重新检查 URL、DNS 并固定解析地址。
+pub async fn get(
+    raw: &str,
+    timeout: Duration,
+    accept: Option<&str>,
+    referer: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    get_with_range(raw, timeout, accept, referer, None).await
 }
 
 /// 只返回代理的协议/主机/端口；解析失败时隐藏整个值，绝不回传认证或查询参数。
@@ -334,9 +415,18 @@ fn should_heal_client(reason: &str) -> bool {
 
 static LAST_HEAL: Lazy<std::sync::Mutex<Option<Instant>>> =
     Lazy::new(|| std::sync::Mutex::new(None));
+static LAST_HOST_HEAL: Lazy<Mutex<HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// 请求失败后按需重建客户端：代理隧道错误、连接被拒 / 超时都算「网络环境可能变了」。
-/// 3 秒内只重建一次，批量探测不会反复重建。
+fn evict_host_client(host: &str) {
+    if let Ok(mut cache) = CLIENTS.lock() {
+        cache.retain(|_, entry| !entry.host.eq_ignore_ascii_case(host));
+    }
+    edge_crypto::evict_host_sessions(host);
+}
+
+/// 请求失败后按需重建客户端：代理隧道错误（全局）重建全部客户端，单域名连接被拒/超时/DNS 错仅清理对应域名。
+/// 3 秒内只触发一次，批量请求不会反复抖动连接池。
 pub fn heal_client(reason: &str) {
     if !should_heal_client(reason) {
         return;
@@ -353,6 +443,38 @@ pub fn heal_client(reason: &str) {
     *last = Some(Instant::now());
     drop(last);
     refresh_client();
+}
+
+pub fn heal_client_for(url: &str, reason: &str) {
+    if !should_heal_client(reason) {
+        return;
+    }
+    if is_proxy_error(reason) {
+        heal_client(reason);
+        return;
+    }
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        heal_client(reason);
+        return;
+    };
+    let mut last = match LAST_HOST_HEAL.lock() {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    if let Some(t) = last.get(&host) {
+        if t.elapsed() < Duration::from_secs(3) {
+            return;
+        }
+    }
+    if last.len() >= 128 {
+        last.retain(|_, t| t.elapsed() < Duration::from_secs(30));
+    }
+    last.insert(host.clone(), Instant::now());
+    drop(last);
+    evict_host_client(&host);
 }
 
 /// reqwest 的 `Display` 只有「error sending request for url (...)」，
@@ -389,6 +511,69 @@ fn dns_summary(addrs: impl IntoIterator<Item = SocketAddr>) -> Value {
     json!({ "count": ips.len(), "has_fake_ip": has_fake_ip })
 }
 
+/// 探测上游业务网关健康状态（先测公开 JSON 通道，若上游仅开加密通道则退化为 hello 握手探测）。
+pub async fn probe_api(origin: &str, timeout: Duration) -> Result<u16, String> {
+    let cur = normalize_base(origin)
+        .ok_or_else(|| "线路地址无效（需要纯 HTTPS 站点地址，禁止内网）".to_string())?;
+    let endpoint = format!("{cur}{}", EdgeScope::Public.endpoint_path());
+    let referer = format!("{cur}/");
+    let packet = json!({
+        "method": "GET",
+        "path": "/api/videos?page=1&size=1",
+        "body": "",
+        "content_type": "",
+    });
+    tokio::time::timeout(timeout, async {
+        let (target, client) = client_for(&endpoint, false).await?;
+        let resp = client
+            .post(target.clone())
+            .timeout(timeout)
+            .header("Accept", "application/json")
+            .header("Origin", &cur)
+            .header("Referer", &referer)
+            .header("X-HG-Public-JSON", "1")
+            .json(&packet)
+            .send()
+            .await
+            .map_err(|e| err_text(&e))?;
+        let status = resp.status();
+        let has_public_hdr = resp
+            .headers()
+            .get("x-hg-public-json")
+            .and_then(|v| v.to_str().ok())
+            == Some("1");
+        if status == reqwest::StatusCode::OK {
+            let text = read_text_limited(resp, MAX_API_BYTES).await?;
+            let val: Value = serde_json::from_str(&text)
+                .map_err(|_| "业务接口返回非 JSON 响应".to_string())?;
+            if val.get("status").and_then(Value::as_i64) == Some(1) {
+                return Ok(200);
+            }
+            return Err("业务接口返回异常状态".into());
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST && !has_public_hdr {
+            let text = read_text_limited(resp, MAX_API_BYTES).await?;
+            if is_public_json_unsupported(&text) {
+                let offer = edge_crypto::HelloOffer::generate()?;
+                let hello_resp = client
+                    .post(target)
+                    .timeout(timeout)
+                    .header("Accept", "application/json")
+                    .header("Origin", &cur)
+                    .header("Referer", &referer)
+                    .json(&offer.request_body)
+                    .send()
+                    .await
+                    .map_err(|e| err_text(&e))?;
+                return Ok(hello_resp.status().as_u16());
+            }
+        }
+        Ok(status.as_u16())
+    })
+    .await
+    .map_err(|_| "请求超时".to_string())?
+}
+
 /// 网络自检：DNS / HTTP / 代理相关环境变量，用于远程定位「打不开」。
 pub async fn diagnose() -> Value {
     let cur = base();
@@ -423,11 +608,24 @@ pub async fn diagnose() -> Value {
         }),
     };
 
+    let api_started = Instant::now();
+    let api = match probe_api(&cur, Duration::from_secs(10)).await {
+        Ok(status) => json!({
+            "status": status,
+            "ms": api_started.elapsed().as_millis() as u64,
+        }),
+        Err(e) => json!({
+            "error": e,
+            "ms": api_started.elapsed().as_millis() as u64,
+        }),
+    };
+
     json!({
         "base": cur,
         "host": host,
         "dns": dns,
         "http": http,
+        "api": api,
         "env": {
             "HTTP_PROXY": std::env::var("HTTP_PROXY").ok().map(|p| redact_proxy(&p)),
             "HTTPS_PROXY": std::env::var("HTTPS_PROXY").ok().map(|p| redact_proxy(&p)),
@@ -458,12 +656,10 @@ fn retryable_error(error: &str) -> bool {
     )
 }
 
-/// 只重试可能恢复的错误；404/权限错误/安全拒绝直接结束，避免无效等待。
-/// 站点偶发 TLS 抖动；碰上代理隧道错误就先重建客户端再试
-/// （代理软件开关后旧客户端会一直卡在 tunnel error 上）。
-async fn with_retry<F, Fut, T>(
-    retry: bool,
+async fn with_retry_attempts<F, Fut, T>(
+    attempts: usize,
     is_current: impl Fn() -> bool,
+    on_heal: impl Fn(&str),
     mut f: F,
 ) -> Result<T, String>
 where
@@ -471,7 +667,7 @@ where
     Fut: std::future::Future<Output = Result<T, String>>,
 {
     let mut last = String::from("network error");
-    let attempts = if retry { 3 } else { 1 };
+    let attempts = attempts.max(1);
     for attempt in 0..attempts {
         require_current(&is_current)?;
         match f().await {
@@ -482,7 +678,7 @@ where
                     return Err(last);
                 }
                 require_current(&is_current)?;
-                heal_client(&last);
+                on_heal(&last);
                 if attempt + 1 < attempts {
                     tokio::time::sleep(Duration::from_millis(350 * (attempt as u64 + 1))).await;
                 }
@@ -490,6 +686,35 @@ where
         }
     }
     Err(last)
+}
+
+/// 只重试可能恢复的错误；404/权限错误/安全拒绝直接结束，避免无效等待。
+/// 站点偶发 TLS 抖动；碰上代理隧道错误就先重建客户端再试
+/// （代理软件开关后旧客户端会一直卡在 tunnel error 上）。
+async fn with_retry_healed<F, Fut, T>(
+    retry: bool,
+    is_current: impl Fn() -> bool,
+    on_heal: impl Fn(&str),
+    f: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    with_retry_attempts(if retry { 3 } else { 1 }, is_current, on_heal, f).await
+}
+
+#[cfg(test)]
+async fn with_retry<F, Fut, T>(
+    retry: bool,
+    is_current: impl Fn() -> bool,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    with_retry_healed(retry, is_current, |reason| heal_client(reason), f).await
 }
 
 // 只记录固定的操作类型，不写搜索词、账号、内容 ID 或查询参数。
@@ -606,7 +831,258 @@ fn unpack_edge_response(value: Value) -> Result<Value, EdgeError> {
     ))
 }
 
-/// 业务请求：走边缘信封。
+fn classify_response_kind(ctype: &str) -> &'static str {
+    let lower = ctype.to_ascii_lowercase();
+    if lower.contains("json") {
+        "json"
+    } else if lower.contains("html") {
+        "html"
+    } else {
+        "other"
+    }
+}
+
+fn classify_gateway(headers: &reqwest::header::HeaderMap) -> &'static str {
+    if headers.contains_key("x-amz-cf-id") {
+        "cloudfront"
+    } else if headers.contains_key("cf-ray") {
+        "cloudflare"
+    } else {
+        "other"
+    }
+}
+
+fn is_public_json_unsupported(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|e| matches!(e.as_str(), "invalid_request" | "unsupported_version"))
+}
+
+fn is_crypto_session_expired(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|e| e == "session_expired")
+}
+
+async fn ensure_crypto_session(
+    origin: &str,
+    scope: EdgeScope,
+    endpoint_url: &str,
+    referer: &str,
+    allow_retry: bool,
+    is_current: impl Fn() -> bool + Sync,
+) -> Result<Arc<edge_crypto::CryptoSession>, String> {
+    if let Some(session) = edge_crypto::get_cached_session(origin, scope) {
+        return Ok(session);
+    }
+    let flight = edge_crypto::handshake_lock(origin, scope)?;
+    let _guard = flight.lock().await;
+    if let Some(session) = edge_crypto::get_cached_session(origin, scope) {
+        return Ok(session);
+    }
+    require_current(&is_current)?;
+    let offer = edge_crypto::HelloOffer::generate()?;
+    let (target, client) = client_for(endpoint_url, allow_retry).await?;
+    require_current(&is_current)?;
+    let resp = client
+        .post(target)
+        .timeout(Duration::from_secs(10))
+        .header("Accept", "application/json")
+        .header("Origin", origin)
+        .header("Referer", referer)
+        .json(&offer.request_body)
+        .send()
+        .await
+        .map_err(|e| err_text(&e))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(EDGE_UNAUTHORIZED.into());
+    }
+    let text = read_text_limited(resp, MAX_API_BYTES).await?;
+    if !status.is_success() {
+        return Err(format!(
+            "HTTP {status}: {}",
+            text.chars().take(160).collect::<String>()
+        ));
+    }
+    let hello_json: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()))?;
+    let session = Arc::new(offer.finish(scope, &hello_json)?);
+    edge_crypto::store_session(origin, scope, session.clone());
+    Ok(session)
+}
+
+enum PublicJsonOutcome {
+    Ready(Result<Value, String>),
+    FallbackEncrypted,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_public_json_attempt(
+    origin: &str,
+    endpoint_url: &str,
+    referer: &str,
+    method: &str,
+    path: &str,
+    encoded: &str,
+    ctype: &str,
+    guest_get: bool,
+    allow_retry: bool,
+    is_current: &(impl Fn() -> bool + Sync),
+    started: Instant,
+    status_code: &mut Option<u16>,
+    headers_ms: &mut Option<u64>,
+    target_host: &mut String,
+    response_kind: &mut &'static str,
+    gateway: &mut &'static str,
+) -> Result<PublicJsonOutcome, String> {
+    let sorted_path = edge_crypto::sort_public_query(path);
+    let envelope = json!({
+        "method": method,
+        "path": sorted_path,
+        "body": encoded,
+        "content_type": ctype,
+    });
+    let mut next = network_policy::parse_target(endpoint_url)?;
+    for hop in 0..=5 {
+        let (target, client) = client_for(next.as_str(), allow_retry).await?;
+        *target_host = target.host_str().unwrap_or("").to_string();
+        require_current(is_current)?;
+        let resp = client
+            .post(target.clone())
+            .header("Accept", "application/json")
+            .header("Origin", origin)
+            .header("Referer", referer)
+            .header("X-HG-Public-JSON", "1")
+            .json(&envelope)
+            .send()
+            .await
+            .map_err(|e| err_text(&e))?;
+        let status = resp.status();
+        *status_code = Some(status.as_u16());
+        *headers_ms = Some(started.elapsed().as_millis() as u64);
+        let resp_ctype = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        *response_kind = classify_response_kind(resp_ctype);
+        *gateway = classify_gateway(resp.headers());
+        if status.is_redirection() {
+            if hop == 5 {
+                return Err("重定向次数超过限制".into());
+            }
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|h| h.to_str().ok())
+                .ok_or("重定向缺少有效 Location")?;
+            next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
+            continue;
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(PublicJsonOutcome::Ready(decode_edge_body(status, "")));
+        }
+        let has_public_hdr = resp
+            .headers()
+            .get("x-hg-public-json")
+            .and_then(|v| v.to_str().ok())
+            == Some("1");
+        let text = read_text_limited(resp, MAX_API_BYTES).await?;
+        if status == reqwest::StatusCode::BAD_REQUEST
+            && !has_public_hdr
+            && is_public_json_unsupported(&text)
+        {
+            return Ok(PublicJsonOutcome::FallbackEncrypted);
+        }
+        return Ok(PublicJsonOutcome::Ready(decode_edge_body(status, &text)));
+    }
+    Err("重定向次数超过限制".into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_encrypted_attempt(
+    origin: &str,
+    scope: EdgeScope,
+    endpoint_url: &str,
+    referer: &str,
+    method: &str,
+    envelope: &Value,
+    token: Option<&str>,
+    allow_retry: bool,
+    is_current: &(impl Fn() -> bool + Sync),
+    started: Instant,
+    status_code: &mut Option<u16>,
+    headers_ms: &mut Option<u64>,
+    target_host: &mut String,
+    response_kind: &mut &'static str,
+    gateway: &mut &'static str,
+) -> Result<Value, String> {
+    let auth_token = if scope == EdgeScope::Public { None } else { token };
+    for crypto_retry in 0..=1 {
+        let session = ensure_crypto_session(
+            origin,
+            scope,
+            endpoint_url,
+            referer,
+            allow_retry,
+            is_current,
+        )
+        .await?;
+        let prepared = session.prepare_call(envelope.clone(), auth_token)?;
+        let (target, client) = client_for(endpoint_url, allow_retry).await?;
+        *target_host = target.host_str().unwrap_or("").to_string();
+        require_current(is_current)?;
+        let resp = client
+            .post(target)
+            .header("Accept", "application/json")
+            .header("Origin", origin)
+            .header("Referer", referer)
+            .json(&prepared.payload)
+            .send()
+            .await
+            .map_err(|e| err_text(&e))?;
+        let status = resp.status();
+        *status_code = Some(status.as_u16());
+        *headers_ms = Some(started.elapsed().as_millis() as u64);
+        let resp_ctype = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        *response_kind = classify_response_kind(resp_ctype);
+        *gateway = classify_gateway(resp.headers());
+        if status.is_redirection() {
+            return Err("业务接口重定向已拒绝".into());
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return decode_edge_body(status, "");
+        }
+        let text = read_text_limited(resp, MAX_API_BYTES).await?;
+        if !status.is_success() {
+            if is_crypto_session_expired(&text) {
+                edge_crypto::evict_session(origin, scope, &prepared.sid);
+                if crypto_retry == 0 {
+                    continue;
+                }
+            }
+            return decode_edge_body(status, &text);
+        }
+        let result_json: Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{e}: {}", text.chars().take(160).collect::<String>()))?;
+        let decrypted = session.decrypt_result(&prepared, &result_json, method)?;
+        *status_code = Some(decrypted.status);
+        *response_kind = classify_response_kind(&decrypted.content_type);
+        let inner_status = reqwest::StatusCode::from_u16(decrypted.status)
+            .map_err(|_| "加密接口响应状态码无效".to_string())?;
+        return decode_edge_body(inner_status, &decrypted.body_text);
+    }
+    Err("加密接口会话已过期".into())
+}
+
+/// 业务请求：走边缘分组网关。
 pub async fn edge(
     origin: &str,
     method: &str,
@@ -637,6 +1113,8 @@ pub async fn edge_while(
     {
         return Err(EdgeError::Transport("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into()));
     }
+    let scope = edge_crypto::classify_scope(method, path)
+        .ok_or_else(|| EdgeError::Transport("接口未配置加密通道".into()))?;
     let (encoded, ctype) = match &body {
         Some(v) => (
             B64.encode(serde_json::to_vec(v).map_err(|e| EdgeError::Transport(e.to_string()))?),
@@ -651,7 +1129,7 @@ pub async fn edge_while(
         "content_type": ctype,
     });
 
-    let url = format!("{cur}/api/edge/request");
+    let url = format!("{cur}{}", scope.endpoint_path());
     let referer = format!("{cur}/");
     let token = token.map(|s| s.to_string());
 
@@ -668,123 +1146,208 @@ pub async fn edge_while(
     // 取播放地址的 POST 没有副作用，和 GET 一样允许重试
     let can_retry = (method.eq_ignore_ascii_case("GET") && body.is_none())
         || (method.eq_ignore_ascii_case("POST") && operation == "play");
-    let value = with_retry(can_retry, &is_current, || {
-        let is_current = &is_current;
-        attempt += 1;
-        let attempt = attempt;
-        let envelope = envelope.clone();
-        let token = token.clone();
-        let url = url.clone();
-        let referer = referer.clone();
-        let line_host = line_host.clone();
-        async move {
-            let started = Instant::now();
-            crate::playback_log::record("api.begin", json!({"request": request, "attempt": attempt, "operation": operation, "method": method, "line_host": line_host}));
-            let mut status_code = None;
-            let mut headers_ms = None;
-            let mut target_host = line_host.clone();
-            let mut response_kind = "unknown";
-            let mut gateway = "other";
-            let result = async {
-                let mut next = network_policy::parse_target(&url)?;
-                for hop in 0..=5 {
-                    let (target, client) = client_for(next.as_str(), operation != "play").await?;
-                    target_host = target.host_str().unwrap_or("").to_string();
-                    let mut req = client
-                        .post(target.clone())
-                        .header("Accept", "application/json")
-                        .header("Referer", &referer)
-                        .json(&envelope);
-                    if let Some(t) = token.as_deref() {
-                        if !t.is_empty() {
-                            req = req.header("Authorization", format!("Bearer {t}"));
+    let value = with_retry_healed(
+        can_retry,
+        &is_current,
+        |reason| heal_client_for(&url, reason),
+        || {
+            let is_current = &is_current;
+            attempt += 1;
+            let attempt = attempt;
+            let cur = cur.clone();
+            let envelope = envelope.clone();
+            let token = token.clone();
+            let url = url.clone();
+            let referer = referer.clone();
+            let line_host = line_host.clone();
+            let encoded = encoded.clone();
+            async move {
+                let started = Instant::now();
+                crate::playback_log::record("api.begin", json!({"request": request, "attempt": attempt, "operation": operation, "scope": scope.as_str(), "method": method, "line_host": line_host}));
+                let mut status_code = None;
+                let mut headers_ms = None;
+                let mut target_host = line_host.clone();
+                let mut response_kind = "unknown";
+                let mut gateway = "other";
+                let result = if scope == EdgeScope::Public {
+                    match send_public_json_attempt(
+                        &cur,
+                        &url,
+                        &referer,
+                        method,
+                        path,
+                        &encoded,
+                        ctype,
+                        guest_get,
+                        operation != "play",
+                        is_current,
+                        started,
+                        &mut status_code,
+                        &mut headers_ms,
+                        &mut target_host,
+                        &mut response_kind,
+                        &mut gateway,
+                    )
+                    .await
+                    {
+                        Ok(PublicJsonOutcome::Ready(res)) => res,
+                        Ok(PublicJsonOutcome::FallbackEncrypted) => {
+                            send_encrypted_attempt(
+                                &cur,
+                                scope,
+                                &url,
+                                &referer,
+                                method,
+                                &envelope,
+                                token.as_deref(),
+                                operation != "play",
+                                is_current,
+                                started,
+                                &mut status_code,
+                                &mut headers_ms,
+                                &mut target_host,
+                                &mut response_kind,
+                                &mut gateway,
+                            )
+                            .await
                         }
+                        Err(e) => Err(e),
                     }
-                    require_current(is_current)?;
-                    let resp = req.send().await.map_err(|e| err_text(&e))?;
-                    let status = resp.status();
-                    status_code = Some(status.as_u16());
-                    headers_ms = Some(started.elapsed().as_millis() as u64);
-                    let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
-                    response_kind = if ctype.contains("json") { "json" } else if ctype.contains("html") { "html" } else { "other" };
-                    gateway = if resp.headers().contains_key("x-amz-cf-id") { "cloudfront" } else if resp.headers().contains_key("cf-ray") { "cloudflare" } else { "other" };
-                    // 逐跳重建并检查客户端；不自动把信封 POST 改成无信封 GET。
-                    if status.is_redirection() {
-                        if hop == 5 {
-                            return Err("重定向次数超过限制".into());
-                        }
-                        let location = resp
-                            .headers()
-                            .get(reqwest::header::LOCATION)
-                            .and_then(|h| h.to_str().ok())
-                            .ok_or("重定向缺少有效 Location")?;
-                        next = edge_redirect_target(&target, status.as_u16(), location, guest_get)?;
-                        continue;
-                    }
-                    if status == reqwest::StatusCode::UNAUTHORIZED {
-                        return decode_edge_body(status, "");
-                    }
-                    let text = read_text_limited(resp, MAX_API_BYTES).await?;
-                    return decode_edge_body(status, &text);
-                }
-                Err("重定向次数超过限制".into())
-            }.await;
-            crate::playback_log::record("api.end", json!({
-                "request": request, "attempt": attempt, "operation": operation, "method": method,
-                "line_host": line_host, "target_host": target_host, "status": status_code,
-                "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64,
-                "response_kind": response_kind, "gateway": gateway,
-                "business_status": result.as_ref().ok().and_then(|v: &Value| v.get("status")).and_then(Value::as_i64),
-                "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e)),
-                "retryable": can_retry && result.as_ref().err().is_some_and(|e| retryable_error(e)),
-            }));
-            result
-        }
-    })
+                } else {
+                    send_encrypted_attempt(
+                        &cur,
+                        scope,
+                        &url,
+                        &referer,
+                        method,
+                        &envelope,
+                        token.as_deref(),
+                        operation != "play",
+                        is_current,
+                        started,
+                        &mut status_code,
+                        &mut headers_ms,
+                        &mut target_host,
+                        &mut response_kind,
+                        &mut gateway,
+                    )
+                    .await
+                };
+                crate::playback_log::record("api.end", json!({
+                    "request": request, "attempt": attempt, "operation": operation, "scope": scope.as_str(), "method": method,
+                    "line_host": line_host, "target_host": target_host, "status": status_code,
+                    "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64,
+                    "response_kind": response_kind, "gateway": gateway,
+                    "business_status": result.as_ref().ok().and_then(|v: &Value| v.get("status")).and_then(Value::as_i64),
+                    "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e)),
+                    "retryable": can_retry && result.as_ref().err().is_some_and(|e| retryable_error(e)),
+                }));
+                result
+            }
+        },
+    )
     .await
     .map_err(classify_edge_transport)?;
     unpack_edge_response(value)
 }
 
-/// 拉原始字节（图片 / m3u8 / 分片）。
-pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String> {
+pub struct FetchedBytes {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub content_range: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// 拉原始字节（支持可选上游 HTTP Range 透传、自定义超时与最大重试次数）。
+async fn fetch_bytes_with_range_timeout_attempts(
+    url: &str,
+    range: Option<&str>,
+    timeout: Duration,
+    attempts: usize,
+) -> Result<FetchedBytes, String> {
     static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let request = NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let resource = crate::playback_log::resource_id(url);
     let mut attempt = 0;
     let url = url.to_string();
+    let range = range.map(|s| s.to_string());
     let referer = format!("{}/", base());
-    with_retry(true, || true, || {
-        attempt += 1;
-        let attempt = attempt;
-        let resource = resource.clone();
-        let url = url.clone();
-        let referer = referer.clone();
-        async move {
-            let started = Instant::now();
-            crate::playback_log::record("network.begin", json!({"request": request, "resource": resource, "attempt": attempt}));
-            let mut status = None;
-            let mut headers_ms = None;
-            let result = async {
-                let resp = get(&url, Duration::from_secs(20), None, Some(&referer)).await?;
-                status = Some(resp.status().as_u16());
-                headers_ms = Some(started.elapsed().as_millis() as u64);
-                if !resp.status().is_success() {
-                    return Err(format!("HTTP {}", resp.status()));
+    with_retry_attempts(
+        attempts,
+        || true,
+        |reason| heal_client_for(&url, reason),
+        || {
+            attempt += 1;
+            let attempt = attempt;
+            let resource = resource.clone();
+            let url = url.clone();
+            let range = range.clone();
+            let referer = referer.clone();
+            async move {
+                let started = Instant::now();
+                crate::playback_log::record("network.begin", json!({"request": request, "resource": resource, "attempt": attempt}));
+                let mut status = None;
+                let mut headers_ms = None;
+                let result = async {
+                    let resp = get_with_range(
+                        &url,
+                        timeout,
+                        None,
+                        Some(&referer),
+                        range.as_deref(),
+                    )
+                    .await?;
+                    let code = resp.status().as_u16();
+                    status = Some(code);
+                    headers_ms = Some(started.elapsed().as_millis() as u64);
+                    if !resp.status().is_success() {
+                        return Err(format!("HTTP {}", resp.status()));
+                    }
+                    let content_type = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let content_range = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let bytes = read_bytes_limited(resp, MAX_MEDIA_BYTES).await?;
+                    Ok(FetchedBytes {
+                        status: code,
+                        content_type,
+                        content_range,
+                        bytes,
+                    })
                 }
-                let ctype = resp
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let bytes = read_bytes_limited(resp, MAX_MEDIA_BYTES).await?;
-                Ok((ctype, bytes))
-            }.await;
-            crate::playback_log::record("network.end", json!({"request": request, "resource": resource, "attempt": attempt, "status": status, "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": result.as_ref().ok().map(|(_, bytes)| bytes.len()), "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e))}));
-            result
-        }
-    })
+                .await;
+                crate::playback_log::record("network.end", json!({"request": request, "resource": resource, "attempt": attempt, "status": status, "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": result.as_ref().ok().map(|fetched| fetched.bytes.len()), "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e))}));
+                result
+            }
+        },
+    )
     .await
+}
+
+/// 拉原始字节（支持可选上游 HTTP Range 透传）。
+pub async fn fetch_bytes_with_range(url: &str, range: Option<&str>) -> Result<FetchedBytes, String> {
+    fetch_bytes_with_range_timeout_attempts(url, range, Duration::from_secs(20), 3).await
+}
+
+/// 拉原始字节（指定超时与最多尝试次数，供多候选图床快速回退使用）。
+pub async fn fetch_bytes_with_timeout_attempts(
+    url: &str,
+    timeout: Duration,
+    attempts: usize,
+) -> Result<(Option<String>, Vec<u8>), String> {
+    let fetched = fetch_bytes_with_range_timeout_attempts(url, None, timeout, attempts).await?;
+    Ok((fetched.content_type, fetched.bytes))
+}
+
+/// 拉原始字节（图片 / m3u8 / 分片）。
+pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String> {
+    fetch_bytes_with_timeout_attempts(url, Duration::from_secs(20), 3).await
 }
 
 #[cfg(test)]
@@ -835,7 +1398,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn playback_address_client_does_not_reuse_http_connections() {
+    async fn playback_address_client_reuses_pooled_connections_without_internal_retry() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -882,7 +1445,7 @@ mod tests {
             assert_eq!(response.text().await.unwrap(), "ok");
         }
         server.abort();
-        assert_eq!(connections.load(Ordering::SeqCst), 2);
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -969,31 +1532,89 @@ mod tests {
         let client = Arc::new(reqwest::Client::new());
         let mut cache = ClientCache::new();
         cache.insert(
-            "true:example.com:443".into(),
-            (now + CLIENT_TTL, client.clone()),
+            "true:example.com:443:true".into(),
+            CachedClient {
+                expires: now + CLIENT_TTL,
+                host: "example.com".into(),
+                addrs: Vec::new(),
+                http: client.clone(),
+            },
         );
         assert!(Arc::ptr_eq(
             &cached_client(
                 &cache,
-                "true:example.com:443",
-                now + Duration::from_secs(29)
+                "true:example.com:443:true",
+                now + Duration::from_secs(119)
             )
             .unwrap(),
             &client
         ));
-        assert!(cached_client(&cache, "true:example.com:443", now + CLIENT_TTL).is_none());
-        assert!(cached_client(&cache, "false:example.com:443", now).is_none());
-        assert!(cached_client(&cache, "true:example.com:8443", now).is_none());
+        assert!(cached_client(&cache, "true:example.com:443:true", now + CLIENT_TTL).is_none());
+        assert!(cached_client(&cache, "false:example.com:443:true", now).is_none());
+        assert!(cached_client(&cache, "true:example.com:8443:true", now).is_none());
+    }
+
+    #[test]
+    fn same_addr_set_ignores_dns_round_robin_order() {
+        let a: Vec<SocketAddr> = ["1.1.1.1:443", "8.8.8.8:443"]
+            .into_iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let b: Vec<SocketAddr> = ["8.8.8.8:443", "1.1.1.1:443"]
+            .into_iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let c: Vec<SocketAddr> = ["1.1.1.1:443", "9.9.9.9:443"]
+            .into_iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert!(same_addr_set(&a, &b));
+        assert!(!same_addr_set(&a, &c));
+        assert!(same_addr_set(&[], &[]));
+    }
+
+    #[test]
+    fn host_heal_only_evicts_failed_host_unless_proxy_error() {
+        refresh_client();
+        LAST_HOST_HEAL.lock().unwrap().clear();
+        *LAST_HEAL.lock().unwrap() = None;
+
+        let now = Instant::now();
+        {
+            let mut cache = CLIENTS.lock().unwrap();
+            for host in ["cdn-a.test", "cdn-b.test"] {
+                cache.insert(
+                    format!("true:{host}:443:true"),
+                    CachedClient {
+                        expires: now + CLIENT_TTL,
+                        host: host.into(),
+                        addrs: Vec::new(),
+                        http: Arc::new(reqwest::Client::new()),
+                    },
+                );
+            }
+        }
+
+        heal_client_for("https://cdn-a.test/seg.ts", "connection reset");
+        {
+            let cache = CLIENTS.lock().unwrap();
+            assert!(!cache.contains_key("true:cdn-a.test:443:true"));
+            assert!(cache.contains_key("true:cdn-b.test:443:true"));
+        }
+
+        heal_client_for("https://cdn-b.test/img.jpg", "tunnel error: failed to connect");
+        assert!(CLIENTS.lock().unwrap().is_empty());
+        refresh_client();
     }
 
     #[test]
     fn edge_redirects_only_replay_anonymous_reads() {
-        let current = url::Url::parse("https://huangguoai.ai/api/edge/request").unwrap();
+        let current = url::Url::parse("https://huangguoai.ai/api/public/request").unwrap();
         assert_eq!(
             edge_redirect_target(
                 &current,
                 301,
-                "https://huangguoai.com/api/edge/request",
+                "https://huangguoai.com/api/public/request",
                 true
             )
             .unwrap()
@@ -1108,5 +1729,66 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&diagnose().await).expect("json")
         );
+    }
+
+    /// 手动跑：`cargo test --lib -- --ignored net::tests::edge_live_smoke -- --nocapture`
+    #[tokio::test]
+    #[ignore = "联网测试：验证新分组网关与 dx150-edge-v1 加密通道，手动用 --ignored 运行"]
+    async fn edge_live_smoke() {
+        let base = "https://huangguoai.com";
+        let feed = edge(base, "GET", "/api/videos?page=1&size=2", None, None)
+            .await
+            .expect("public feed");
+        let first_id = feed["items"][0]["id"].as_i64().expect("first video id");
+        println!("feed ok, first_id={first_id}");
+
+        let detail = edge(base, "GET", &format!("/api/videos/{first_id}"), None, None)
+            .await
+            .expect("dynamic video detail");
+        assert_eq!(detail["id"].as_i64(), Some(first_id));
+        println!("detail ok: {}", detail["title"].as_str().unwrap_or(""));
+
+        let play = edge(
+            base,
+            "POST",
+            &format!("/api/videos/{first_id}/episodes/1/playback"),
+            Some(json!({})),
+            None,
+        )
+        .await
+        .expect("playback endpoint");
+        let stream = play["streams"]["main"]
+            .as_str()
+            .or_else(|| play["video_url"].as_str())
+            .unwrap_or("");
+        assert!(!stream.is_empty(), "empty playback stream: {play}");
+        println!("playback ok");
+
+        let search = edge(base, "GET", "/api/search?q=%E7%88%B1%E6%83%85&page=1&size=2", None, None)
+            .await
+            .expect("dynamic search");
+        assert!(search["items"].is_array(), "search items: {search}");
+        println!("search ok");
+
+        let posts = edge(base, "GET", "/api/posts?page=1&size=2", None, None)
+            .await
+            .expect("public posts");
+        assert!(posts["items"].is_array(), "posts items: {posts}");
+        println!("posts ok");
+
+        let rank = edge(base, "GET", "/api/ranks/hot", None, None)
+            .await
+            .expect("public rank");
+        assert!(rank["items"].is_array(), "rank items: {rank}");
+        println!("rank ok");
+
+        assert_eq!(probe_api(base, Duration::from_secs(10)).await.unwrap(), 200);
+        assert_eq!(
+            probe_api("https://huangguoai.ai", Duration::from_secs(10))
+                .await
+                .unwrap(),
+            404
+        );
+        println!("probe_api ok");
     }
 }

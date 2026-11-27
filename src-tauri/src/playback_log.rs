@@ -46,6 +46,7 @@ pub fn resource_id(raw: &str) -> String {
 }
 
 pub fn error_kind(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
     if error.contains("禁止") || error.contains("只允许") || error.contains("控制字符") {
         if error.contains("降级") {
             "https_downgrade_denied"
@@ -54,14 +55,36 @@ pub fn error_kind(error: &str) -> &'static str {
         } else {
             "target_policy_denied"
         }
-    } else if error.contains("DNS") {
+    } else if error.contains("DNS") || lower.contains("dns") {
         "dns_error"
-    } else if error.contains("超时") || error.to_ascii_lowercase().contains("timeout") {
+    } else if error.contains("超时") || lower.contains("timeout") || lower.contains("timed out") {
         "timeout"
     } else if error.starts_with("HTTP ") {
         "http_error"
     } else if error.contains("重定向") {
         "redirect_error"
+    } else if lower.contains("tunnel") || lower.contains("proxy") {
+        "proxy_error"
+    } else if lower.contains("connection reset")
+        || lower.contains("os error 54")
+        || lower.contains("os error 104")
+        || lower.contains("broken pipe")
+        || lower.contains("unexpected eof")
+        || lower.contains("early eof")
+    {
+        "connection_reset"
+    } else if lower.contains("connection refused")
+        || lower.contains("os error 61")
+        || lower.contains("os error 111")
+    {
+        "connection_refused"
+    } else if lower.contains("certificate")
+        || lower.contains("tls")
+        || lower.contains("ssl")
+        || lower.contains("handshake")
+        || lower.contains("alert")
+    {
+        "tls_error"
     } else {
         "transport_error"
     }
@@ -345,5 +368,37 @@ mod tests {
         assert!(log.set(false).is_err());
         assert!(log.enabled);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn error_kind_classifies_reset_refused_tls_and_proxy_errors() {
+        assert_eq!(
+            error_kind("error sending request for url (https://pic.qnlycc.cn/a.jpg) ← client error (Connect) ← Connection reset by peer (os error 54)"),
+            "connection_reset"
+        );
+        assert_eq!(
+            error_kind("error sending request ← unexpected EOF"),
+            "connection_reset"
+        );
+        assert_eq!(
+            error_kind("error sending request ← client error (Connect) ← Connection refused (os error 61)"),
+            "connection_refused"
+        );
+        assert_eq!(
+            error_kind("error sending request ← invalid peer certificate: UnknownIssuer"),
+            "tls_error"
+        );
+        assert_eq!(
+            error_kind("error sending request ← received fatal alert: HandshakeFailure"),
+            "tls_error"
+        );
+        assert_eq!(
+            error_kind("tunnel error: failed to create underlying connection"),
+            "proxy_error"
+        );
+        assert_eq!(error_kind("请求超时"), "timeout");
+        assert_eq!(error_kind("dns lookup failed"), "dns_error");
+        assert_eq!(error_kind("HTTP 404 Not Found"), "http_error");
+        assert_eq!(error_kind("禁止访问普通内网"), "private_address_denied");
     }
 }

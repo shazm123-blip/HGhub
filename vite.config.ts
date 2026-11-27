@@ -15,6 +15,11 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
+  resolve: {
+    alias: {
+      "hls.js": "hls.js/dist/hls.light.mjs",
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

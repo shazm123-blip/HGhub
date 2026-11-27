@@ -87,19 +87,11 @@ pub async fn probe(urls: Vec<String>) -> Value {
 }
 
 async fn probe_one(url: String) -> Value {
-    let target = format!("{}/", url.trim_end_matches('/'));
     let started = Instant::now();
-    let res = crate::net::get(
-        &target,
-        PROBE_TIMEOUT,
-        Some("text/html,application/xhtml+xml"),
-        None,
-    )
-    .await;
+    let res = crate::net::probe_api(&url, PROBE_TIMEOUT).await;
     let ms = started.elapsed().as_millis() as u64;
     match res {
-        Ok(r) => {
-            let status = r.status().as_u16();
+        Ok(status) => {
             json!({ "url": url, "ok": status < 400, "status": status, "ms": ms })
         }
         Err(e) => json!({ "url": url, "ok": false, "ms": ms, "error": e }),

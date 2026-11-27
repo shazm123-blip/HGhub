@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, forwardRef, useState } from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, forwardRef, useState } from "react";
 import Hls from "hls.js";
 import { isLocalMedia, mediaUrl, platform } from "../api";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
@@ -14,6 +14,7 @@ export type VideoHandle = {
   rate: (r: number) => void;
   mute: (m: boolean) => void;
   volume: (v: number) => void;
+  setTransform: (scale: number, x: number, y: number, gesturing: boolean) => void;
   reload: () => void;
 };
 
@@ -47,6 +48,12 @@ type Props = {
   onClick?: () => void;
   className?: string;
 };
+
+function applyVideoTransform(v: HTMLVideoElement, scale: number, panX: number, panY: number, isGesturing: boolean) {
+  const hasTransform = scale !== 1 || panX !== 0 || panY !== 0;
+  v.style.transition = isGesturing ? "opacity .25s" : "opacity .25s, transform .2s cubic-bezier(.2,0,0,1)";
+  v.style.transform = hasTransform ? `translate3d(${panX}px, ${panY}px, 0) scale(${scale})` : "translateZ(0)";
+}
 
 /** 只负责「播」：hls.js + video 元素，控制条由外层渲染。 */
 const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
@@ -176,6 +183,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     rate: (r: number) => { const v = videoRef.current; if (v) v.playbackRate = r; },
     mute: (m: boolean) => { const v = videoRef.current; if (v) v.muted = m; },
     volume: (vol: number) => { const v = videoRef.current; if (v) v.volume = vol; },
+    setTransform: (s, x, y, gesturing) => {
+      const v = videoRef.current;
+      if (v) applyVideoTransform(v, s, x, y, gesturing);
+    },
     reload: () => {
       const v = videoRef.current;
       if (!v) return;
@@ -205,6 +216,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     recoverCountRef.current = 0;
     lastSizeRef.current = { w: 0, h: 0 };
     lastBufferedRef.current = -1;
+    applyVideoTransform(video, 1, 0, 0, false);
     seekCleanupRef.current?.();
     seekCleanupRef.current = null;
     if (recoverTimerRef.current) {
@@ -360,7 +372,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
-  const hasTransform = scale !== 1 || panX !== 0 || panY !== 0;
+  useLayoutEffect(() => {
+    const v = videoRef.current;
+    if (v) applyVideoTransform(v, scale, panX, panY, isGesturing);
+  }, [scale, panX, panY, isGesturing]);
 
   return (
     <div className={`relative w-full h-full bg-black overflow-hidden ${className}`}>
@@ -382,9 +397,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         className={`w-full h-full bg-black ${fit === "cover" ? "object-cover" : "object-contain"}`}
         style={{
           opacity: ready ? 1 : 0,
-          transform: hasTransform ? `translate3d(${panX}px, ${panY}px, 0) scale(${scale})` : "translateZ(0)",
           transformOrigin: "center center",
-          transition: isGesturing ? "opacity .25s" : "opacity .25s, transform .2s cubic-bezier(.2,0,0,1)",
         }}
         onLoadedData={(e) => {
           const v = e.target as HTMLVideoElement;

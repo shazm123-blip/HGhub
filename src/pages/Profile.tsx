@@ -1,9 +1,10 @@
 import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, isIos, isMacos, APP_VERSION, fmt, fmtTime, isMobile, platform } from "../api";
+import { isIos, isMacos, APP_VERSION, fmt, fmtTime, isMobile, platform } from "../api";
 import type { Detail } from "../types";
 import { useStore } from "../store";
-import { Avatar, Empty, Img, Modal } from "../components/ui";
+import { fetchVideoDetailCached, getCachedVideoDetail, getVideoOrientation, mapWithConcurrency, useVideoSnapshots } from "../videoMeta";
+import { Avatar, CardGridSkeleton, Empty, Img, Modal, SegmentedControl } from "../components/ui";
 import { IChevR, IClock, IClose, IHeart, ILogout, ISettings, IStar, ITrash, IUser } from "../icons";
 
 type ProfileCardItem = {
@@ -17,9 +18,9 @@ type ProfileCardItem = {
 export default function Profile({ wide, active = true }: { wide: boolean; active?: boolean }) {
   const {
     user, setLoginOpen, logout, history, favs, likes, follows, followAuthors,
-    videoSnapshots, upsertVideoSnapshot, getVideoOrientation,
     changeInteraction, removeHistory, clearHistory, push, lineVersion, toast,
   } = useStore();
+  const videoSnapshots = useVideoSnapshots();
   const [tab, setTab] = useState<"fav" | "history" | "like" | "follow">("fav");
   const [limit, setLimit] = useState(12);
   const [fetched, setFetched] = useState<Record<number, Detail>>({});
@@ -55,7 +56,13 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       return undefined;
     }
     const cacheKey = (id: number) => `${lineVersion}:${id}`;
-    const missing = ids.filter((id) => !cacheRef.current.has(cacheKey(id)));
+    const missing: number[] = [];
+    for (const id of ids) {
+      if (cacheRef.current.has(cacheKey(id))) continue;
+      const shared = getCachedVideoDetail(lineVersion, id);
+      if (shared) cacheRef.current.set(cacheKey(id), shared);
+      else missing.push(id);
+    }
     if (!missing.length) {
       const nextMap: Record<number, Detail> = {};
       for (const id of ids) {
@@ -67,21 +74,12 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       return undefined;
     }
     setLoading(true);
-    Promise.allSettled(missing.map((id) => api.video(id).then((d) => ({ id, d }))))
+    mapWithConcurrency(missing, 4, (id) => fetchVideoDetailCached(lineVersion, id).then((d) => ({ id, d })))
       .then((rs) => {
         if (!alive) return;
         for (const r of rs) {
           if (r.status === "fulfilled") {
-            const d = r.value.d;
-            cacheRef.current.set(cacheKey(r.value.id), d);
-            upsertVideoSnapshot({
-              id: d.id,
-              title: d.title,
-              cover: d.cover,
-              score: d.score,
-              episode_count: d.episode_count,
-              is_finished: d.is_finished,
-            });
+            cacheRef.current.set(cacheKey(r.value.id), r.value.d);
           }
         }
         const nextMap: Record<number, Detail> = {};
@@ -93,7 +91,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [active, tab, visibleKey, lineVersion, upsertVideoSnapshot]);
+  }, [active, tab, visibleKey, lineVersion]);
 
   const cards = useMemo<ProfileCardItem[]>(() => {
     return visibleIds.map((id) => {
@@ -180,13 +178,13 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
 
         {/* 我的内容 */}
         <div className="flex items-center gap-2 mt-4">
-          <div className="segment-control flex-1 flex bg-s3 rounded-(--r-ctl) p-1">
-            {([["fav", "收藏"], ["history", "历史"], ["like", "喜欢"], ["follow", "关注"]] as const).map(([k, l]) => (
-              <button aria-pressed={tab === k} key={k} onClick={() => setTab(k)}
-                className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${tab === k ? "tonal text-on-sec" : "text-mut"}`}
-                style={tab === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{l}</button>
-            ))}
-          </div>
+          <SegmentedControl
+            className="flex-1"
+            ariaLabel="我的内容分类"
+            value={tab}
+            onChange={setTab}
+            options={[{ value: "fav", label: "收藏" }, { value: "history", label: "历史" }, { value: "like", label: "喜欢" }, { value: "follow", label: "关注" }]}
+          />
           {tab !== "follow" && allIds.length > 0 && (
             <button type="button" onClick={() => setEditing((v) => !v)}
               className={`shrink-0 px-3 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${editing ? "bg-primary text-on-primary" : "bg-s3 text-mut"}`}>
@@ -224,7 +222,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
               <Empty icon={<IUser size={24} />} title="还没有关注作者" sub="在剧集详情里关注喜欢的创作者" action="去逛逛" onAction={() => push({ kind: "ranks" })} />
             )
           ) : loading && !cards.length ? (
-            <div className="flex justify-center py-8"><div className="w-7 h-7 spinner" /></div>
+            <CardGridSkeleton wide={wide} count={6} aspect="aspect-[3/4]" gap="gap-2" />
           ) : cards.length ? (
             <div className={`grid gap-2 ${wide ? "grid-cols-4 lg:grid-cols-5" : "grid-cols-3"}`}>
               {cards.map((c) => {
@@ -252,9 +250,9 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
                         第 {p.ep} 集{p.t > 3 ? ` · ${fmtTime(p.t)}` : ""}
                       </div>
                     )}
-                    {!editing && ori && (
+                    {!editing && ori?.orientation === "landscape" && (
                       <span className="absolute top-1.5 right-1.5 px-1 py-0.5 rounded bg-black/65 text-[9.5px] text-white/95 leading-none">
-                        {ori.orientation === "landscape" ? "横屏" : "竖屏"}
+                        横屏
                       </span>
                     )}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-1.5">

@@ -2,8 +2,8 @@ import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, isIos, isMacos, cover, fmt, isMobile } from "../api";
 import type { Comment, Post } from "../types";
-import { useStore } from "../store";
-import { Avatar, Empty, Img } from "../components/ui";
+import { usePlaybackPrefs, useStore } from "../store";
+import { Avatar, CardGridSkeleton, Empty, Img } from "../components/ui";
 import Player from "../components/Player";
 import { pushBackHandler } from "../back";
 import { IBack, IClose, IComment, IFireF, IHeart, IHeartF, IPlayF, IRefresh, IStar, IStarF } from "../icons";
@@ -128,8 +128,8 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
           <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
             {items.map((p) => (
               <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
-                <Img src={p.cover} />
+                className="cv-card group cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
+                <Img src={p.cover} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
                 <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-2">
                   <div className="text-[12px] font-medium text-white clamp-2 leading-snug tsh">{p.title}</div>
@@ -141,7 +141,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
             ))}
           </div>
         ) : loading ? (
-          <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+          <CardGridSkeleton wide={wide} aspect="aspect-[4/5]" gap="gap-2" />
         ) : err ? (
           <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore(true)} />
         ) : (
@@ -176,7 +176,8 @@ function validPostCounts(raw: Post["counts"]): NonNullable<Post["counts"]> {
 
 /* ================= 吃瓜详情（网页式浏览） ================= */
 export function PostDetail({ id, onBack, active = true }: { id: number; onBack: () => void; active?: boolean }) {
-  const { toast, strictSecurity, muted, setMuted, volume, user, isLiked, isFav, changeInteraction, setLoginOpen, lineVersion } = useStore();
+  const { toast, strictSecurity, user, isLiked, isFav, changeInteraction, setLoginOpen, lineVersion } = useStore();
+  const { muted, setMuted, volume } = usePlaybackPrefs();
   const [post, setPost] = useState<(Post & { content?: string; video_url?: string }) | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [play, setPlay] = useState(false);

@@ -93,11 +93,46 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
   const visitedPagesRef = useRef<Set<number>>(new Set());
   const itemsRef = useRef<VideoCard[]>([]);
   const requestSeqRef = useRef(0);
+  const feedSaveTimerRef = useRef<number | undefined>(undefined);
+  const feedDirtyRef = useRef(false);
+
+  const flushFeedState = useCallback(() => {
+    if (feedSaveTimerRef.current !== undefined) {
+      window.clearTimeout(feedSaveTimerRef.current);
+      feedSaveTimerRef.current = undefined;
+    }
+    if (!feedDirtyRef.current) return;
+    feedDirtyRef.current = false;
+    saveFeedState(totalPagesRef.current, seenIdsRef.current);
+  }, []);
+
+  const scheduleFeedStateSave = useCallback((immediate = false) => {
+    feedDirtyRef.current = true;
+    if (immediate) {
+      flushFeedState();
+      return;
+    }
+    if (feedSaveTimerRef.current !== undefined) window.clearTimeout(feedSaveTimerRef.current);
+    feedSaveTimerRef.current = window.setTimeout(() => {
+      feedSaveTimerRef.current = undefined;
+      flushFeedState();
+    }, 1500);
+  }, [flushFeedState]);
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flushFeedState();
+    };
+    window.addEventListener("pagehide", flushFeedState);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      mounted.current = false;
+      window.removeEventListener("pagehide", flushFeedState);
+      document.removeEventListener("visibilitychange", onHide);
+      flushFeedState();
+    };
+  }, [flushFeedState]);
 
   const load = useCallback(async (reset = false, notify = false) => {
     if (!reset && (loadingRef.current || doneRef.current)) return;
@@ -131,7 +166,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
 
         if (res?.pagination?.pages && res.pagination.pages > 0) {
           totalPagesRef.current = res.pagination.pages;
-          saveFeedState(totalPagesRef.current, seenIdsRef.current);
+          scheduleFeedStateSave();
         }
 
         const deduped: VideoCard[] = [];
@@ -160,7 +195,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
       let toCommit = chosen;
       if (!toCommit.length && fallbackBatch.length) {
         seenIdsRef.current = [];
-        saveFeedState(totalPagesRef.current, []);
+        scheduleFeedStateSave(true);
         toCommit = fallbackBatch;
       }
 
@@ -185,7 +220,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
         if (mounted.current) setLoading(false);
       }
     }
-  }, [toast]);
+  }, [toast, scheduleFeedStateSave]);
 
   useEffect(() => {
     if (!loadingRef.current && !itemsRef.current.length && !doneRef.current) {
@@ -212,8 +247,8 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
     if (cur[0] === id) return;
     const next = [id, ...cur.filter((x) => x !== id)].slice(0, MAX_SEEN_IDS);
     seenIdsRef.current = next;
-    saveFeedState(totalPagesRef.current, next);
-  }, []);
+    scheduleFeedStateSave();
+  }, [scheduleFeedStateSave]);
 
   const ids = useMemo(() => items.map((v) => v.id), [items]);
   const covers = useMemo(() => {
