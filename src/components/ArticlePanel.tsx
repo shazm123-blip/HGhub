@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { api, fmt, cover as imageCover } from "../api";
 import { handleArticleClick, sanitizeHtml } from "../html";
-import { useStoreActions, useUiState } from "../store";
+import { useSecurityUi, useStoreActions } from "../store";
 import { IClose } from "../icons";
 
 /* ================= 图文正文（吃瓜） ================= */
@@ -9,7 +9,7 @@ export function ArticlePanel({ title, html, cover, hot, onClose }: {
   title: string; html: string; cover?: string; hot?: number; onClose: () => void;
 }) {
   const { toast } = useStoreActions();
-  const { strictSecurity } = useUiState();
+  const { strictSecurity } = useSecurityUi();
   const safeHtml = useMemo(() => sanitizeHtml(html), [html, strictSecurity]);
   const openSafeLink = (url: string) => {
     api.openUrl(url).catch(() => {

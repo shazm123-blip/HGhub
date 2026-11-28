@@ -6,27 +6,46 @@ import { IBoltF, ICheck, IClose, IRefresh, ISettings } from "../icons";
 
 type ProbeMap = Record<string, LineProbe>;
 
-/* 单条线路：左侧点一下即切换，右侧单独检测 */
+/* 单条线路：左侧点一下即切换，右侧信号灯与延迟检测 */
 function Row({ item, current, probe, busy, probeDisabled, switching, onPick, onProbe }: {
   item: LineItem; current: boolean; probe?: LineProbe; busy: boolean; probeDisabled: boolean; switching: boolean;
   onPick: (url: string) => void; onProbe: (url: string) => void;
 }) {
+  const signalColor = !probe
+    ? "bg-dim/50"
+    : !probe.ok
+      ? "bg-danger"
+      : probe.ms < 250
+        ? "bg-mint"
+        : probe.ms < 600
+          ? "bg-primary"
+          : "bg-danger";
+  const textTone = !probe
+    ? "text-dim"
+    : !probe.ok
+      ? "text-danger"
+      : probe.ms < 250
+        ? "text-mint font-semibold"
+        : probe.ms < 600
+          ? "text-primary font-semibold"
+          : "text-danger font-semibold";
   return (
-    <div className={`flex items-center gap-2 px-3.5 py-2.5 ${current ? "bg-s3/70" : ""}`}>
+    <div className={`flex items-center gap-2.5 px-3.5 py-2.5 transition-colors ${current ? "bg-[var(--p-tint)]" : ""}`}>
       <button onClick={() => onPick(item.url)} disabled={switching} className="flex-1 min-w-0 text-left pressable disabled:opacity-60">
-        <div className="flex items-center gap-1.5 text-[12.5px] text-on">
+        <div className="flex items-center gap-1.5 text-[13px] font-medium text-on">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${current ? "bg-primary" : signalColor}`} />
           <span className="truncate">{item.name || item.host || hostOf(item.url)}</span>
-          {current && <ICheck size={13} className="text-mint shrink-0" />}
+          {current && <ICheck size={13} className="text-primary shrink-0" />}
         </div>
-        <div className="text-[10.5px] text-mut truncate mt-0.5">{item.url}</div>
+        <div className="text-[10.5px] text-mut truncate mt-0.5 pl-3">{item.url}</div>
       </button>
       <span
         title={probe ? (probe.error || (probe.status ? `HTTP ${probe.status}` : "")) : ""}
-        className={`text-[11px] tabular-nums shrink-0 ${probe ? (probe.ok ? "text-mint font-semibold" : "text-danger") : "text-dim"}`}>
+        className={`text-[11px] tabular-nums shrink-0 ${textTone}`}>
         {busy ? "测速中…" : probe ? (probe.ok ? `${probe.ms}ms` : probe.status ? `HTTP ${probe.status}` : "失败") : "—"}
       </span>
       <button onClick={() => onProbe(item.url)} disabled={probeDisabled || switching}
-        className="shrink-0 h-7 px-2.5 rounded-(--r-sm) bg-s4 text-[11px] text-on/80 pressable disabled:opacity-50">检测</button>
+        className="shrink-0 h-7 px-2.5 rounded-(--r-sm) bg-s3 hairline-ring text-[11px] text-on/85 pressable disabled:opacity-50">检测</button>
     </div>
   );
 }

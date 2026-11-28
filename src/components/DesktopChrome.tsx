@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useStoreActions, useNavState, useSessionUser, useThemeState, useUiState, type Tab } from "../store";
+import { useModalUi, useNavState, useSessionUser, useStoreActions, useThemeState, useViewportMode, type Tab } from "../store";
 import { hasBackHandler, isPlaybackLocked } from "../back";
 import { APP_VERSION } from "../api";
 import { Avatar } from "./ui";
@@ -16,7 +16,7 @@ const appWindow = () => getCurrentWindow();
 export function DesktopTitleBar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { setTheme, setTab, setTheater } = useStoreActions();
   const { theme } = useThemeState();
-  const { theater } = useUiState();
+  const { theater } = useViewportMode();
   const [maxed, setMaxed] = useState(false);
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -72,7 +72,7 @@ export function DesktopTitleBar({ collapsed, onToggle }: { collapsed: boolean; o
 export function MacToolbar({ collapsed, theater, onToggle }: { collapsed: boolean; theater: boolean; onToggle: () => void }) {
   const { setTab, push, travel, setTheme, setTheater } = useStoreActions();
   const { tab, stack, canGoBack, canGoForward } = useNavState();
-  const { loginOpen, linePickerOpen, shortcutsOpen } = useUiState();
+  const { loginOpen, linePickerOpen, shortcutsOpen } = useModalUi();
   const { themePref, theme } = useThemeState();
   const page = stack.at(-1);
   const titles = { home: "首页", category: "分类", profile: "我的", search: "搜索", ranks: "排行榜", settings: "设置", posts: "黄果吃瓜", post: "吃瓜详情" };

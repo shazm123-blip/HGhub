@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, forwardRef, useState } from "react";
+import { memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, forwardRef, useState } from "react";
 import type Hls from "hls.js";
 import { isLocalMedia, isMobile, mediaUrl, platform } from "../api";
 import { getLoadedHls, loadHls, type HlsCtor } from "../hlsLoader";
@@ -490,4 +490,4 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   );
 });
 
-export default VideoSurface;
+export default memo(VideoSurface);

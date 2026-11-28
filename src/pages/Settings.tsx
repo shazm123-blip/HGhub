@@ -1,7 +1,7 @@
 import IosNavigation from "../components/IosNavigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api, isIos, APP_VERSION, fmtBytes, hostOf, isMobile, logLine, platform, type UpdateInfo } from "../api";
-import { useHistoryState, useInteractions, usePlaybackPrefs, useStoreActions, useThemeState, useUiState } from "../store";
+import { useDataVersion, useHistoryState, useInteractions, usePlaybackPrefs, useSecurityUi, useStoreActions, useThemeState } from "../store";
 import { Modal, SegmentedControl, Toggle } from "../components/ui";
 import { copyPlaybackLog, initPlaybackLog, setPlaybackLog, usePlaybackLog } from "../playbackDiagnostics";
 import {
@@ -10,21 +10,19 @@ import {
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
   <>
-    <div className="group-heading text-[11px] font-semibold text-dim tracking-wide px-1 mt-4 mb-1.5">{title}</div>
-    <div className="settings-group rounded-(--r-md) bg-s2 divide-y divide-s3">{children}</div>
+    <div className="group-heading text-[11.5px] font-semibold text-dim tracking-wide px-1 mt-5 mb-1.5">{title}</div>
+    <div className="settings-group surface-card rounded-(--r-md) divide-y divide-sep">{children}</div>
   </>
 );
 
-/* 独立设置页：外观 / 播放 / 本地数据 / 网络 / 故障排查 / 其他
-   入口：桌面侧栏「设置」、移动端「我的」右上角齿轮 */
-const isApple = platform === "ios" || platform === "macos";
-
+/* 独立设置页：外观与性能 / 播放 / 网络 / 本地数据 / 故障排查 / 其他 */
 export default function Settings({ onBack, wide }: { onBack: () => void; wide: boolean }) {
-  const { setThemePref, setStrictSecurity, setTab, setLinePickerOpen, setShortcutsOpen, toast } = useStoreActions();
-  const { theme, themePref } = useThemeState();
+  const { setThemePref, setPowerSaver, setStrictSecurity, setTab, setLinePickerOpen, setShortcutsOpen, toast } = useStoreActions();
+  const { theme, themePref, powerSaver } = useThemeState();
   const { favs, likes } = useInteractions();
   const history = useHistoryState();
-  const { strictSecurity, strictSecurityReady, securityPending, cliRelaxed, lineVersion } = useUiState();
+  const { strictSecurity, strictSecurityReady, securityPending, cliRelaxed } = useSecurityUi();
+  const { lineVersion } = useDataVersion();
   const { muteOnStartup, setMuteOnStartup, landscapeFitPref, setLandscapeFitPref } = usePlaybackPrefs();
   const [about, setAbout] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
@@ -62,17 +60,16 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
       {isIos ? <IosNavigation title="设置" onBack={onBack} /> : platform !== "macos" && (
-      <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: "var(--sat, 0px)" }}>
-        <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />
-        <div className="relative px-3 pt-2 pb-4">
+      <div className="shrink-0 relative overflow-hidden bg-bg hairline-b" style={{ paddingTop: "var(--sat, 0px)" }}>
+        <div className="relative px-3 pt-2 pb-3.5">
           <button onClick={onBack} aria-label="返回" className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
           <div className="px-2 mt-1 flex items-end justify-between">
             <div>
-              <div className="flex items-center gap-2">
-                <span className="w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ISettings size={20} strokeWidth={1.7} /></span>
-                <span className="text-[24px] font-bold tracking-wide text-on">设置</span>
+              <div className="flex items-center gap-2.5">
+                <span className="w-9 h-9 rounded-(--r-sm) icon-tone-amber flex items-center justify-center"><ISettings size={20} strokeWidth={1.7} /></span>
+                <span className="text-[24px] font-bold tracking-tight text-on">设置</span>
               </div>
-              <div className="text-[11px] text-mut mt-1">外观 · 播放 · 线路 · 本地数据</div>
+              <div className="text-[11.5px] text-mut mt-1">外观 · 省电 · 播放 · 线路 · 本地数据</div>
             </div>
           </div>
         </div>
@@ -80,20 +77,21 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
       )}
       <div className="flex-1 scroll-y px-4 pt-1" style={{ paddingBottom: "calc(var(--sab, 0px) + 32px)" }}>
         <div className={wide ? "max-w-[720px] mx-auto" : ""}>
-          <Section title="外观">
-            <div className="flex items-center gap-3 px-3.5 py-3">
-              <span style={isIos ? { backgroundColor: "#6555ad" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">外观</div>
-                <div className="text-[11px] text-mut">
-                  {themePref === "system"
-                    ? `跟随系统 · 当前${theme === "dark" ? "深色" : "浅色"}`
-                    : `已固定${theme === "dark" ? "深色" : "浅色"}外观`}
+          <Section title="外观与性能">
+            <div className="px-3.5 py-3">
+              <div className="flex items-center gap-3">
+                <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-indigo flex items-center justify-center">{theme === "dark" ? <IMoon size={16} /> : <ISun size={16} />}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13.5px] text-on">外观</div>
+                  <div className="text-[11.5px] text-mut">
+                    {themePref === "system"
+                      ? `跟随系统 · 当前${theme === "dark" ? "深色" : "浅色"}`
+                      : `已固定${theme === "dark" ? "深色" : "浅色"}外观`}
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="px-3.5 pb-3 -mt-1">
               <SegmentedControl
+                className="mt-2.5"
                 role="radiogroup"
                 ariaLabel="外观"
                 value={themePref}
@@ -101,23 +99,38 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
                 options={[{ value: "system", label: "跟随系统" }, { value: "light", label: "浅色" }, { value: "dark", label: "深色" }]}
               />
             </div>
+            <div className="flex items-center gap-3 px-3.5 py-3">
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-emerald flex items-center justify-center"><IBoltF size={16} /></span>
+              <div className="flex-1 min-w-0">
+                <div className="text-[13.5px] text-on">极致省电模式</div>
+                <div className="text-[11.5px] text-mut">关闭静态毛玻璃与装饰微动效，进一步延长移动端续航</div>
+              </div>
+              <Toggle
+                on={powerSaver}
+                onChange={(on) => {
+                  setPowerSaver(on);
+                  toast(on ? "已开启极致省电模式" : "已恢复视觉质感模式", "ok");
+                }}
+                label="极致省电模式"
+              />
+            </div>
           </Section>
 
           <Section title="播放">
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span style={isIos ? { backgroundColor: "#cf5933" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IVolMute size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-orange flex items-center justify-center"><IVolMute size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">启动时静音</div>
-                <div className="text-[11px] text-mut">默认开启，每次启动均静音；关闭后记住上次静音状态。下次启动生效。</div>
+                <div className="text-[13.5px] text-on">启动时静音</div>
+                <div className="text-[11.5px] text-mut">默认开启，每次启动均静音；关闭后记住上次静音状态。下次启动生效。</div>
               </div>
               <Toggle on={muteOnStartup} onChange={setMuteOnStartup} label="启动时静音" />
             </div>
             <div className="px-3.5 py-3">
               <div className="flex items-center gap-3">
-                <span style={isIos ? { backgroundColor: "#2d7ec6" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRotate size={16} /></span>
+                <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-sky flex items-center justify-center"><IRotate size={16} /></span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-on">横屏视频竖屏显示</div>
-                  <div className="text-[11px] text-mut">在手机竖屏刷到横屏剧集时的默认画面适配方式</div>
+                  <div className="text-[13.5px] text-on">横屏视频竖屏显示</div>
+                  <div className="text-[11.5px] text-mut">在手机竖屏刷到横屏剧集时的默认画面适配方式</div>
                 </div>
               </div>
               <SegmentedControl
@@ -133,18 +146,21 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="网络">
             <button onClick={() => setLinePickerOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span style={isIos ? { backgroundColor: "#208361" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBoltF size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-emerald flex items-center justify-center"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">线路</div>
-                <div className="text-[11px] text-mut truncate">{lineBase ? hostOf(lineBase) : "固定线路 1（默认）"}</div>
+                <div className="text-[13.5px] text-on">线路</div>
+                <div className="text-[11.5px] text-mut truncate flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-mint shrink-0" />
+                  <span className="truncate">{lineBase ? hostOf(lineBase) : "固定线路 1（默认）"}</span>
+                </div>
               </div>
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span style={isIos ? { backgroundColor: "#3874b3" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILockF size={15} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-sky flex items-center justify-center"><ILockF size={15} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">严格安全模式</div>
-                <div className="text-[11px] text-mut">
+                <div className="text-[13.5px] text-on">严格安全模式</div>
+                <div className="text-[11.5px] text-mut">
                   {cliRelaxed
                     ? "已由启动参数 --no-strict 切换为兼容模式；可手动重新开启"
                     : isMobile
@@ -167,18 +183,18 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <Section title="本地数据">
             <button onClick={() => setTab("profile")} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span style={isIos ? { backgroundColor: "#c53c64" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IHeart size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-rose flex items-center justify-center"><IHeart size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">本地记录</div>
-                <div className="text-[11px] text-mut">{favs.length} 部收藏 · {likes.length} 部喜欢 · {history.length} 条历史</div>
+                <div className="text-[13.5px] text-on">本地记录</div>
+                <div className="text-[11.5px] text-mut">{favs.length} 部收藏 · {likes.length} 部喜欢 · {history.length} 条历史</div>
               </div>
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <button onClick={() => { readCacheStats(); setClearOpen(true); }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span style={isIos ? { backgroundColor: "#727783" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IBroom size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-slate flex items-center justify-center"><IBroom size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">清理缓存</div>
-                <div className="text-[11px] text-mut">
+                <div className="text-[13.5px] text-on">清理缓存</div>
+                <div className="text-[11.5px] text-mut">
                   {cacheInfo
                     ? `当前占用 ${fmtBytes(cacheInfo.bytes)}（${cacheInfo.entries} 项）· 封面与播放分片内存缓存`
                     : "解密图 / m3u8 / 密钥与分片内存缓存"}
@@ -201,18 +217,18 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
                 toast((e as Error).message || "诊断失败", "info");
               }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span style={isIos ? { backgroundColor: "#23769d" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-sky flex items-center justify-center"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">网络诊断</div>
-                <div className="text-[11px] text-mut">检测 DNS / 系统代理 / 官网连通性并复制快照</div>
+                <div className="text-[13.5px] text-on">网络诊断</div>
+                <div className="text-[11.5px] text-mut">检测 DNS / 系统代理 / 官网连通性并复制快照</div>
               </div>
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <div className="flex items-center gap-3 px-3.5 py-3">
-              <span style={isIos ? { backgroundColor: "#3874b3" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-indigo flex items-center justify-center"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">播放诊断日志</div>
-                <div className="text-[11px] text-mut">记录点击、拖动、切页和缓冲过程；复现问题后可关闭并复制日志</div>
+                <div className="text-[13.5px] text-on">播放诊断日志</div>
+                <div className="text-[11.5px] text-mut">记录点击、拖动、切页和缓冲过程；复现问题后可关闭并复制日志</div>
                 {playbackLog.error && <div role="alert" className="text-[11px] text-danger">{playbackLog.error}</div>}
               </div>
               <Toggle label="播放诊断日志" on={playbackLog.enabled} disabled={!playbackLog.ready || playbackLog.pending}
@@ -224,10 +240,10 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               catch (e) { toast((e as Error).message || "复制日志失败", "info"); }
               finally { setCopyingLog(false); }
             }} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span style={isIos ? { backgroundColor: "#23769d" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><ILink size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-sky flex items-center justify-center"><ILink size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
-                <div className="text-[11px] text-mut truncate">
+                <div className="text-[13.5px] text-on">{copyingLog ? "正在复制…" : "复制播放诊断日志"}</div>
+                <div className="text-[11.5px] text-mut truncate">
                   {playbackLog.path ? `日志仅保存在本机（${playbackLog.path.split(/[\\/]/).pop()}）` : "日志仅保存在本机"}
                 </div>
               </div>
@@ -238,27 +254,27 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
           <Section title="其他">
             {!isMobile && (
               <button onClick={() => setShortcutsOpen(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-                <span className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IKeyboard size={16} /></span>
+                <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-amber flex items-center justify-center"><IKeyboard size={16} /></span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-on">键盘快捷键</div>
-                  <div className="text-[11px] text-mut">播放控制、选集与导航快捷键一览（按 ? 随时打开）</div>
+                  <div className="text-[13.5px] text-on">键盘快捷键</div>
+                  <div className="text-[11.5px] text-mut">播放控制、选集与导航快捷键一览（按 ? 随时打开）</div>
                 </div>
                 <IChevR size={15} className="shrink-0 text-mut" />
               </button>
             )}
             <button onClick={checkUpdate} disabled={checking} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable disabled:opacity-60">
-              <span style={isIos ? { backgroundColor: "#61804a" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IRefresh size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-emerald flex items-center justify-center"><IRefresh size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">检查更新</div>
-                <div className="text-[11px] text-mut">{checking ? "检查中…" : `当前 v${APP_VERSION} · 对比 GitHub Release`}</div>
+                <div className="text-[13.5px] text-on">检查更新</div>
+                <div className="text-[11.5px] text-mut">{checking ? "检查中…" : `当前 v${APP_VERSION} · 对比 GitHub Release`}</div>
               </div>
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
             <button onClick={() => setAbout(true)} className="w-full flex items-center gap-3 px-3.5 py-3 text-left pressable">
-              <span style={isIos ? { backgroundColor: "#646a74" } : undefined} className="settings-icon shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-primary"><IInfo size={16} /></span>
+              <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-slate flex items-center justify-center"><IInfo size={16} /></span>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-on">关于 HGhub</div>
-                <div className="text-[11px] text-mut">版本 {APP_VERSION} · 仅限非商业使用</div>
+                <div className="text-[13.5px] text-on">关于 HGhub</div>
+                <div className="text-[11.5px] text-mut">版本 {APP_VERSION} · 仅限非商业使用</div>
               </div>
               <IChevR size={15} className="shrink-0 text-mut" />
             </button>
@@ -280,7 +296,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
 
           <p className="text-[12px] text-on/70 leading-relaxed mt-4">
             基于 Rust + Tauri 2 构建的跨平台客户端，支持 Windows、macOS、iOS、Android 与 Linux。
-            {isApple ? "界面遵循 Apple 平台设计语言" : "界面遵循 Fluent 设计语言"}，播放器采用沉浸式信息流。
+            界面采用影院级极简现代设计语言，播放器采用沉浸式低功耗信息流。
           </p>
 
           <div className="mt-4 rounded-(--r-sm) bg-s3/60 p-3 text-[11px] text-mut leading-relaxed">

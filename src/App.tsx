@@ -1,5 +1,5 @@
 import { Suspense, lazy, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavState, useStoreActions, useThemeState, useUiState, type Page, type Tab } from "./store";
+import { useModalUi, useNavState, useStoreActions, useThemeState, useViewportMode, type Page, type Tab } from "./store";
 import { api, isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
 import { consumeImmediatePop, hasBackHandler, isPlaybackLocked, runBack } from "./back";
@@ -23,7 +23,7 @@ const SettingsPage = lazy(() => import("./pages/Settings"));
 const PostsPage = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostsPage })));
 const PostDetail = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostDetail })));
 
-/* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
+/* ============ 底部标签栏（iOS / Android）============ */
 function TabBar() {
   const { platform, setTab, bumpHomeRefresh } = useStoreActions();
   const { tab, stack } = useNavState();
@@ -39,44 +39,36 @@ function TabBar() {
     { k: "profile", label: "我的" },
   ];
   const icons = { home: [IHome, IHomeF], search: [ISearch, ISearch], category: [IGrid, IGridF], profile: [IUser, IUserF] };
-  /* 首页是沉浸视频 → 底栏压深色；搜索/分类/我的 是常规内容页 → 跟随主题外观。 */
+  /* 首页是沉浸视频：OLED 纯黑影院底栏（零实时模糊，大幅省电）；非视频页保留静态精致毛玻璃 */
   const overVideo = tab === "home";
   const lightBar = !overVideo && theme === "light";
   if (platform === "ios") {
-    return <nav aria-label="主导航" className={`hg-tabbar ios-tabbar ${overVideo ? "mat-chrome" : "mat"}`}>
-      {items.map(({ k, label }) => {
-        const selected = k === tab;
-        const Icon = icons[k][selected ? 1 : 0];
-        return <button key={k} aria-current={selected ? "page" : undefined} onClick={() => pickTab(k)}>
-          <Icon size={23} /><span>{label}</span>
-        </button>;
-      })}
-    </nav>;
+    return (
+      <nav aria-label="主导航" className={`hg-tabbar ios-tabbar ${overVideo ? "ios-tabbar-cinema" : "mat"}`}>
+        {items.map(({ k, label }) => {
+          const selected = k === tab;
+          const Icon = icons[k][selected ? 1 : 0];
+          return (
+            <button key={k} aria-current={selected ? "page" : undefined} onClick={() => pickTab(k)} className="pressable">
+              <Icon size={22} strokeWidth={selected ? 2.1 : 1.75} />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </nav>
+    );
   }
   return (
-    <nav aria-label="主导航" className="hg-tabbar absolute bottom-0 inset-x-0 z-30"
-      style={{
-        paddingBottom: "var(--sab, 0px)",
-        background: lightBar ? "rgba(250, 250, 250, .97)" : overVideo ? "rgba(8, 8, 10, .94)" : "#141414",
-        borderTop: lightBar ? "1px solid rgba(0,0,0,.08)" : overVideo ? "1px solid rgba(255,255,255,.06)" : "1px solid rgba(255,255,255,.07)",
-        boxShadow: lightBar ? "0 -2px 14px rgba(0,0,0,.05)" : "none",
-      }}>
-      <div className="h-[50px] flex items-center px-1">
+    <nav aria-label="主导航" className={`hg-tabbar android-tabbar absolute bottom-0 inset-x-0 z-30 ${overVideo ? "is-cinema" : lightBar ? "is-light" : "is-dark"}`}>
+      <div className="h-[52px] flex items-center px-1.5">
         {items.map(({ k, label }) => {
           const on = tab === k;
           const Icon = icons[k][on ? 1 : 0];
-          const color = lightBar
-            ? (on ? "var(--p-primary)" : "rgba(0,0,0,.5)")
-            : (on ? "#ffffff" : "rgba(255,255,255,.6)");
           return (
             <button key={k} aria-current={on ? "page" : undefined} onClick={() => pickTab(k)}
-              className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 pressable"
-              style={{ color }}>
-              <Icon size={20} strokeWidth={on ? 2.1 : 1.75} />
-              <span className="text-[10.5px] leading-none transition-colors duration-200"
-                style={{ fontWeight: on ? 700 : 500 }}>
-                {label}
-              </span>
+              className={`android-tab-item flex-1 h-full flex flex-col items-center justify-center gap-0.5 pressable ${on ? "is-active" : ""}`}>
+              <Icon size={20} strokeWidth={on ? 2.15 : 1.75} />
+              <span className="text-[10.5px] leading-none transition-colors duration-200">{label}</span>
             </button>
           );
         })}
@@ -108,7 +100,8 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
 function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
   const { platform, setTab, pop, setLoginOpen, setShortcutsOpen } = useStoreActions();
   const { tab, stack } = useNavState();
-  const { loginOpen, linePickerOpen, shortcutsOpen, fs } = useUiState();
+  const { loginOpen, linePickerOpen, shortcutsOpen } = useModalUi();
+  const { fs } = useViewportMode();
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
   const [visitedTabs, setVisitedTabs] = useState<Record<Tab, boolean>>(() => ({
@@ -195,7 +188,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
   const vis = (k: Tab) => (tab === k ? "absolute inset-0" : "absolute inset-0 invisible pointer-events-none tab-hidden");
   const modalBlocking = loginOpen || linePickerOpen || shortcutsOpen;
   const pageActive = stack.length === 0 && !modalBlocking;
-  const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 49 : 50) : 14;
+  const bottomInset = isMobile ? (fs ? 0 : platform === "ios" ? 50 : 52) : 14;
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
@@ -246,7 +239,7 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 const DesktopShell = memo(function DesktopShell() {
   const [collapsed, setCollapsed] = useState(false);
   const { platform } = useStoreActions();
-  const { theater } = useUiState();
+  const { theater } = useViewportMode();
   if (platform === "macos") return (
     <div className="absolute inset-0 flex mac-window">
       {!theater && <DesktopRail collapsed={collapsed} />}
@@ -271,7 +264,7 @@ const DesktopShell = memo(function DesktopShell() {
 /* ============ 移动端（无壳） ============ */
 const MobileShell = memo(function MobileShell() {
   const { platform } = useStoreActions();
-  const { fs } = useUiState();
+  const { fs } = useViewportMode();
   return (
     <div className={`fixed inset-0 flex flex-col bg-canvas plat-${platform}`}
       style={fs ? undefined : { paddingLeft: "var(--sal, 0px)", paddingRight: "var(--sar, 0px)" }}>
@@ -285,7 +278,7 @@ const MobileShell = memo(function MobileShell() {
 /* ============ 快捷键速查弹窗 ============ */
 function ShortcutsModal() {
   const { platform, setShortcutsOpen } = useStoreActions();
-  const { shortcutsOpen } = useUiState();
+  const { shortcutsOpen } = useModalUi();
   const rows: [string, string][] = [
     ["Space", "播放 / 暂停"],
     ["↑ / ↓", "上一个 / 下一个视频"],
@@ -328,7 +321,7 @@ function ShortcutsModal() {
 /* ============ 懒加载全局弹层（未打开前不加载 chunk） ============ */
 function GlobalModals() {
   const { setLinePickerOpen } = useStoreActions();
-  const { loginOpen, linePickerOpen } = useUiState();
+  const { loginOpen, linePickerOpen } = useModalUi();
   const [loginLoaded, setLoginLoaded] = useState(loginOpen);
   const [lineLoaded, setLineLoaded] = useState(linePickerOpen);
   useEffect(() => { if (loginOpen) setLoginLoaded(true); }, [loginOpen]);
@@ -346,7 +339,8 @@ function GlobalModals() {
 function AppEffects() {
   const { platform, setLoginOpen, setLinePickerOpen, setShortcutsOpen, setTab, pop, setFs, toast } = useStoreActions();
   const { tab, stack } = useNavState();
-  const { loginOpen, linePickerOpen, shortcutsOpen, fs } = useUiState();
+  const { loginOpen, linePickerOpen, shortcutsOpen } = useModalUi();
+  const { fs } = useViewportMode();
   const lastBackExitRef = useRef(0);
 
   useEffect(() => {

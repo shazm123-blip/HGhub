@@ -1,0 +1,199 @@
+/* ===================================================================
+   HGhub Design System 2.0 — 影院级极简现代色板与排版阶梯
+   全平台统一「深邃影院黑 + 暖琥珀橙」品牌视觉语言，保留平台原生交互质感。
+   =================================================================== */
+:root {
+  color-scheme: dark;
+  --p-canvas: #0b0b0e;
+  --p-bg: #0f0f13;
+  --p-s1: #15151a;
+  --p-s2: #1b1b22;
+  --p-s3: #24242d;
+  --p-s4: #2f2f3b;
+  --p-on: #f7f7f9;
+  --p-mut: #9e9ea9;
+  --p-dim: #6f6f7b;
+  --p-primary: #ff9f0a;
+  --p-primary-soft: #ffb340;
+  --p-on-primary: #1c1100;
+  --p-pc: #35230a;
+  --p-on-pc: #ffd8a8;
+  --p-sec: #24242d;
+  --p-on-sec: #f7f7f9;
+  --p-like: #ff375f;
+  --p-star: #ffd60a;
+  --p-success: #30d158;
+  --p-danger: #ff453a;
+  --p-on-danger: #ffffff;
+  --p-glow: rgba(255, 159, 10, .28);
+  --p-hover: rgba(255, 255, 255, .07);
+  --p-tint: rgba(255, 159, 10, .14);
+  --p-sep: rgba(255, 255, 255, .10);
+  --p-rim: rgba(255, 255, 255, .075);
+  --p-rim-strong: rgba(255, 255, 255, .15);
+  --p-fill: rgba(120, 120, 136, .22);
+  --p-fill-2: rgba(120, 120, 136, .14);
+  --p-mat: rgba(18, 18, 22, .80);
+  --p-mat-thick: rgba(22, 22, 27, .90);
+  --p-spinner-track: rgba(255, 255, 255, .16);
+  --p-border: rgba(255, 255, 255, .08);
+  --p-quote-bg: rgba(255, 255, 255, .04);
+  --p-stack-shadow: -18px 0 44px rgba(0, 0, 0, .58);
+  --p-shadow: 0 24px 68px rgba(0, 0, 0, .52), 0 4px 16px rgba(0, 0, 0, .34);
+
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-ctl: 999px;
+  --nav-h: 64px;
+
+  --ease-spring: cubic-bezier(.32, .72, 0, 1);
+  --ease-snappy: cubic-bezier(.2, .9, .3, 1.12);
+  --ease-out-ios: cubic-bezier(.25, .1, .25, 1);
+  --dur-push: .38s;
+  --dur-sheet: .40s;
+}
+
+/* 平台微调：iOS OLED 纯黑画布 / macOS 细腻桌面灰度 / Windows 精致圆角 */
+html.plat-ios {
+  --p-canvas: #000000;
+  --p-bg: #000000;
+  --p-s1: #121215;
+  --p-s2: #18181d;
+  --p-s3: #222229;
+  --p-s4: #2d2d36;
+  --r-sm: 11px;
+  --r-md: 15px;
+  --r-lg: 20px;
+  --r-ctl: 999px;
+  --t-large: 34px; --t-title1: 28px; --t-title2: 22px; --t-title3: 20px;
+  --t-headline: 17px; --t-body: 17px; --t-callout: 16px; --t-subhead: 15px;
+  --t-footnote: 13px; --t-caption1: 12px; --t-caption2: 11px;
+  -webkit-touch-callout: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html.plat-macos {
+  --p-canvas: #121215;
+  --p-bg: #151519;
+  --p-s1: #1b1b21;
+  --p-s2: #222229;
+  --p-s3: #2c2c35;
+  --p-s4: #383843;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 14px;
+  --r-ctl: 8px;
+  --nav-h: 0px;
+  --t-large: 26px; --t-title1: 22px; --t-title2: 17px; --t-title3: 15px;
+  --t-headline: 13px; --t-body: 13px; --t-callout: 12px; --t-subhead: 11px;
+  --t-footnote: 10px; --t-caption1: 10px; --t-caption2: 10px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html.plat-windows {
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 12px;
+  --r-ctl: 6px;
+  --nav-h: 0px;
+}
+
+html.plat-linux {
+  --r-sm: 8px;
+  --r-md: 11px;
+  --r-lg: 14px;
+  --r-ctl: 8px;
+  --nav-h: 0px;
+}
+
+html.plat-ios, html.plat-android {
+  --sat: max(env(safe-area-inset-top, 0px), 12px);
+  --sab: max(env(safe-area-inset-bottom, 0px), 16px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+/* ===================================================================
+   浅色外观（柔和暖灰白画布 + 纯白浮卡 + 暖琥珀橙强调）
+   =================================================================== */
+html.theme-light {
+  color-scheme: light;
+  --p-canvas: #f4f4f7;
+  --p-bg: #f4f4f7;
+  --p-s1: #ffffff;
+  --p-s2: #ffffff;
+  --p-s3: #ececf1;
+  --p-s4: #e0e0e7;
+  --p-on: #111115;
+  --p-mut: #646470;
+  --p-dim: #8c8c98;
+  --p-primary: #e07800;
+  --p-primary-soft: #f59e0b;
+  --p-on-primary: #ffffff;
+  --p-pc: #fff1db;
+  --p-on-pc: #783b00;
+  --p-sec: #e9e9ef;
+  --p-on-sec: #141418;
+  --p-like: #ff2d55;
+  --p-star: #c28700;
+  --p-success: #248a3d;
+  --p-danger: #d70015;
+  --p-on-danger: #ffffff;
+  --p-glow: rgba(224, 120, 0, .20);
+  --p-hover: rgba(0, 0, 0, .045);
+  --p-tint: rgba(224, 120, 0, .11);
+  --p-sep: rgba(60, 60, 67, .18);
+  --p-rim: rgba(0, 0, 0, .06);
+  --p-rim-strong: rgba(0, 0, 0, .11);
+  --p-fill: rgba(120, 120, 128, .14);
+  --p-fill-2: rgba(120, 120, 128, .10);
+  --p-mat: rgba(248, 248, 251, .84);
+  --p-mat-thick: rgba(250, 250, 252, .94);
+  --p-spinner-track: rgba(0, 0, 0, .12);
+  --p-border: rgba(0, 0, 0, .07);
+  --p-quote-bg: rgba(0, 0, 0, .035);
+  --p-stack-shadow: -12px 0 32px rgba(0, 0, 0, .14);
+  --p-shadow: 0 18px 48px rgba(0, 0, 0, .12), 0 2px 8px rgba(0, 0, 0, .05);
+}
+
+html.plat-macos.theme-light {
+  --p-canvas: #efeff3;
+  --p-bg: #ffffff;
+  --p-s1: #ffffff;
+  --p-s2: #f5f5f8;
+  --p-s3: #e8e8ee;
+  --p-s4: #dadbe2;
+}
+
+@theme inline {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable", "Segoe UI", "Roboto", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+  --color-canvas: var(--p-canvas);
+  --color-bg: var(--p-bg);
+  --color-s1: var(--p-s1);
+  --color-s2: var(--p-s2);
+  --color-s3: var(--p-s3);
+  --color-s4: var(--p-s4);
+  --color-on: var(--p-on);
+  --color-mut: var(--p-mut);
+  --color-dim: var(--p-dim);
+  --color-primary: var(--p-primary);
+  --color-on-primary: var(--p-on-primary);
+  --color-pc: var(--p-pc);
+  --color-on-pc: var(--p-on-pc);
+  --color-sec: var(--p-sec);
+  --color-on-sec: var(--p-on-sec);
+  --color-neon: var(--p-like);
+  --color-cyan: var(--p-primary);
+  --color-violet: var(--p-pc);
+  --color-amber: var(--p-star);
+  --color-mint: var(--p-success);
+  --color-blue: var(--p-primary);
+  --color-danger: var(--p-danger);
+  --color-on-danger: var(--p-on-danger);
+  --color-sep: var(--p-sep);
+  --color-fill: var(--p-fill);
+  --color-fill2: var(--p-fill-2);
+}

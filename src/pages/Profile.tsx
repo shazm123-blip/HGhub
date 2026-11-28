@@ -2,7 +2,7 @@ import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isIos, isMacos, APP_VERSION, fmt, fmtTime, isMobile, platform } from "../api";
 import type { Detail } from "../types";
-import { useHistoryState, useInteractions, useSessionUser, useStoreActions, useUiState } from "../store";
+import { useDataVersion, useHistoryState, useInteractions, useSessionUser, useStoreActions } from "../store";
 import { fetchVideoDetailCached, getCachedVideoDetail, getVideoOrientation, mapWithConcurrency, useVideoSnapshots } from "../videoMeta";
 import { Avatar, CardGridSkeleton, Empty, Img, Modal, SegmentedControl } from "../components/ui";
 import { IChevR, IClock, IClose, IHeart, ILogout, ISettings, IStar, ITrash, IUser } from "../icons";
@@ -20,7 +20,7 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
   const user = useSessionUser();
   const history = useHistoryState();
   const { favs, likes, follows, followAuthors } = useInteractions();
-  const { lineVersion } = useUiState();
+  const { lineVersion } = useDataVersion();
   const videoSnapshots = useVideoSnapshots();
   const [tab, setTab] = useState<"fav" | "history" | "like" | "follow">("fav");
   const [limit, setLimit] = useState(12);
@@ -38,8 +38,15 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
     () => (tab === "fav" ? favs : tab === "history" ? history.map((h) => h.id) : tab === "like" ? likes : []),
     [tab, favs, history, likes],
   );
+  const recentHistory = useMemo(() => history.slice(0, 8), [history]);
+  const recentIdsKey = useMemo(() => recentHistory.map((h) => h.id).join(","), [recentHistory]);
+
   const visibleIds = useMemo(() => allIds.slice(0, limit), [allIds, limit]);
-  const visibleKey = visibleIds.join(",");
+  const fetchIdsKey = useMemo(() => {
+    const merged = new Set<number>(visibleIds);
+    for (const h of recentHistory) merged.add(h.id);
+    return [...merged].join(",");
+  }, [visibleIds, recentHistory]);
   const progressOf = (id: number) => (tab === "follow" ? undefined : historyMap.get(id));
 
   useEffect(() => {
@@ -63,9 +70,9 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
   }, [lineVersion]);
 
   useEffect(() => {
-    if (!active || tab === "follow") return undefined;
+    if (!active) return undefined;
     let alive = true;
-    const ids = visibleKey ? visibleKey.split(",").map(Number) : [];
+    const ids = fetchIdsKey ? fetchIdsKey.split(",").map(Number) : [];
     if (!ids.length) {
       setLoading(false);
       return undefined;
@@ -106,16 +113,27 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [active, tab, visibleKey, lineVersion]);
+  }, [active, fetchIdsKey, lineVersion]);
+
+  const resolveCard = (id: number): ProfileCardItem => {
+    const d = fetched[id] || cacheRef.current.get(`${lineVersion}:${id}`);
+    if (d) return { id, title: d.title, cover: d.cover };
+    const snap = videoSnapshots[id];
+    if (snap) return { id, title: snap.title, cover: snap.cover };
+    return { id, title: `短剧 #${id}`, cover: "" };
+  };
+
+  const recentCards = useMemo(
+    () => recentHistory.map((h) => ({ ...resolveCard(h.id), progress: h })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recentIdsKey, recentHistory, fetched, lineVersion, videoSnapshots],
+  );
+  const recentIds = useMemo(() => recentCards.map((c) => c.id), [recentCards]);
+  const recentCovers = useMemo(() => Object.fromEntries(recentCards.map((c) => [c.id, c.cover])), [recentCards]);
 
   const cards = useMemo<ProfileCardItem[]>(() => {
-    return visibleIds.map((id) => {
-      const d = fetched[id] || cacheRef.current.get(`${lineVersion}:${id}`);
-      if (d) return { id, title: d.title, cover: d.cover };
-      const snap = videoSnapshots[id];
-      if (snap) return { id, title: snap.title, cover: snap.cover };
-      return { id, title: `短剧 #${id}`, cover: "" };
-    });
+    return visibleIds.map(resolveCard);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleIds, fetched, lineVersion, videoSnapshots]);
   const cardIds = useMemo(() => cards.map((x) => x.id), [cards]);
   const cardCovers = useMemo(() => Object.fromEntries(cards.map((x) => [x.id, x.cover])), [cards]);
@@ -156,41 +174,115 @@ export default function Profile({ wide, active = true }: { wide: boolean; active
       </div>
       )}
       <div ref={listRef} className="flex-1 scroll-y px-4 pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
-        {/* 资料卡：已登录 / 未登录（点开登录抽屉） */}
+        {/* 资料卡：已登录 / 未登录 */}
         {user ? (
-          <div className="account-group rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 a-rise">
-            <Avatar size={56} name={user.nickname} hue={280} ring />
-            <div className="flex-1 min-w-0">
-              <div className="text-[16px] font-bold text-on truncate">{user.nickname}</div>
-              <div className="text-[11px] text-mut mt-0.5">@{user.username} · ID {user.id}</div>
-              <div className="flex gap-3 mt-2 text-[11px] text-mut">
-                <span>喜欢 <b className="text-on">{fmt(Math.max(likes.length, user.counts?.like || 0))}</b></span>
-                <span>收藏 <b className="text-on">{fmt(Math.max(favs.length, user.counts?.collect || 0))}</b></span>
-                <span>关注 <b className="text-on">{fmt(Math.max(follows.length, user.counts?.following || 0))}</b></span>
+          <div className="account-group surface-card rounded-(--r-lg) p-4 a-rise">
+            <div className="flex items-center gap-3.5">
+              <Avatar size={56} name={user.nickname} hue={30} ring />
+              <div className="flex-1 min-w-0">
+                <div className="text-[17px] font-bold text-on truncate">{user.nickname}</div>
+                <div className="text-[11.5px] text-mut mt-0.5">@{user.username} · ID {user.id}</div>
+              </div>
+              <button onClick={() => setConfirmLogout(true)}
+                className="w-9 h-9 rounded-full bg-s3 hairline-ring flex items-center justify-center text-mut hover:text-on pressable" aria-label="退出登录" title="退出登录">
+                <ILogout size={17} />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-3.5 pt-3 border-t border-sep text-center">
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{fmt(Math.max(likes.length, user.counts?.like || 0))}</div>
+                <div className="text-[11px] text-mut mt-0.5">喜欢</div>
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{fmt(Math.max(favs.length, user.counts?.collect || 0))}</div>
+                <div className="text-[11px] text-mut mt-0.5">收藏</div>
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{fmt(Math.max(follows.length, user.counts?.following || 0))}</div>
+                <div className="text-[11px] text-mut mt-0.5">关注</div>
               </div>
             </div>
-            <button onClick={() => setConfirmLogout(true)}
-              className="w-9 h-9 rounded-full bg-s3 flex items-center justify-center text-mut pressable" aria-label="退出登录" title="退出登录">
-              <ILogout size={17} />
-            </button>
           </div>
         ) : (
           <button onClick={() => setLoginOpen(true)}
-            className="w-full text-left account-group rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 pressable a-rise">
-            <Avatar size={56} icon={<IUser size={26} />} hue={220} ring />
-            <div className="flex-1 min-w-0">
-              <div className="text-[16px] font-bold text-on">未登录</div>
-              <div className="text-[11px] text-mut mt-0.5">登录官网账号后可发表评论并同步互动状态；收藏与观看历史也会保存在本机</div>
-              <div className="flex gap-3 mt-2 text-[11px] text-mut">
-                <span>收藏 <b className="text-on">{favs.length}</b></span>
-                <span>观看 <b className="text-on">{history.length}</b></span>
-                <span>喜欢 <b className="text-on">{likes.length}</b></span>
+            className="w-full text-left account-group surface-card rounded-(--r-lg) p-4 pressable a-rise">
+            <div className="flex items-center gap-3.5">
+              <Avatar size={56} icon={<IUser size={26} />} hue={30} ring />
+              <div className="flex-1 min-w-0">
+                <div className="text-[17px] font-bold text-on">登录 HGhub</div>
+                <div className="text-[11.5px] text-mut mt-0.5 leading-snug">登录后可评论并同步互动；本机收藏与观看历史始终保留</div>
+              </div>
+              <span className="shrink-0 flex items-center gap-0.5 h-8 pl-3.5 pr-2.5 rounded-full brand-grad text-[12px] font-semibold">
+                登录<IChevR size={13} />
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-3.5 pt-3 border-t border-sep text-center">
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{favs.length}</div>
+                <div className="text-[11px] text-mut mt-0.5">收藏</div>
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{history.length}</div>
+                <div className="text-[11px] text-mut mt-0.5">观看</div>
+              </div>
+              <div>
+                <div className="text-[15px] font-bold text-on tabular-nums">{likes.length}</div>
+                <div className="text-[11px] text-mut mt-0.5">喜欢</div>
               </div>
             </div>
-            <span className="shrink-0 flex items-center gap-0.5 h-8 pl-3 pr-2 rounded-full bg-primary text-on-primary text-[11.5px] font-semibold">
-              登录<IChevR size={13} />
-            </span>
           </button>
+        )}
+
+        {/* 继续观看快捷栏（有观看历史时置于顶部，一键秒续播） */}
+        {recentCards.length > 0 && (
+          <section aria-label="继续观看" className="mt-5 a-rise">
+            <div className="flex items-center justify-between mb-2.5 px-0.5">
+              <span className="text-[14.5px] font-bold text-on">继续观看</span>
+              <button
+                type="button"
+                onClick={() => setTab("history")}
+                className="text-[11.5px] text-primary font-medium flex items-center gap-0.5 pressable">
+                全部历史<IChevR size={12} />
+              </button>
+            </div>
+            <div className="scroll-x -mx-4 px-4 flex gap-2.5 snap-x">
+              {recentCards.map((item, idx) => {
+                const p = item.progress;
+                const pct = p.dur > 0 && p.t > 0 ? Math.max(6, Math.min(100, Math.round((p.t / p.dur) * 100))) : 0;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => push({
+                      kind: "feed",
+                      videoIds: recentIds,
+                      index: idx,
+                      title: "继续观看",
+                      startEp: p.ep,
+                      startTime: p.t,
+                      covers: recentCovers,
+                    })}
+                    className="w-[104px] shrink-0 text-left snap-start pressable">
+                    <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1">
+                      {item.cover ? <Img src={item.cover} eager={idx < 4} /> : <div className="absolute inset-0 bg-s3 flex items-center justify-center text-[11px] text-dim px-2 text-center">{item.title}</div>}
+                      <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-[9.5px] font-semibold text-white/95 leading-none tabular-nums">
+                        第 {p.ep} 集
+                      </span>
+                      {pct > 0 && (
+                        <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/45">
+                          <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-1.5 text-[12px] font-semibold text-on clamp-1 leading-tight">{item.title}</div>
+                    <div className="text-[10.5px] text-mut mt-0.5 tabular-nums">
+                      {p.t > 3 ? `看到 ${fmtTime(p.t)}` : `第 ${p.ep} 集`}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {/* 我的内容 */}

@@ -2,7 +2,7 @@ import IosNavigation from "../components/IosNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, fmt, isIos, isMacos, isMobile } from "../api";
 import type { RankItem, VideoCard } from "../types";
-import { useSearchHistory, useStoreActions, useUiState } from "../store";
+import { useDataVersion, useSearchHistory, useStoreActions } from "../store";
 import { getVideoOrientation } from "../videoMeta";
 import { Masonry, RankRow } from "../components/cards";
 import { CardGridSkeleton, Empty, Img, PullToRefresh, RankListSkeleton, SegmentedControl } from "../components/ui";
@@ -13,7 +13,7 @@ const HOT_TAGS = ["都市", "逆袭", "古风", "系统", "后宫", "校园", "�
 export default function Search({ active, wide }: { active: boolean; wide: boolean }) {
   const { push, addSearch, removeSearchHist, clearSearchHist } = useStoreActions();
   const searchHist = useSearchHistory();
-  const { lineVersion, searchIntent } = useUiState();
+  const { lineVersion, searchIntent } = useDataVersion();
   const lastIntentSeqRef = useRef(0);
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(false);
@@ -173,8 +173,20 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const recIds = useMemo(() => recPool.map((x) => x.video_id), [recPool]);
   const recCovers = useMemo(() => Object.fromEntries(recPool.map((x) => [x.video_id, x.cover])), [recPool]);
   const displayedItems = useMemo(() => (onlyFinished ? items.filter((v) => v.is_finished) : items), [items, onlyFinished]);
-  const displayedIds = useMemo(() => displayedItems.map((x) => x.id), [displayedItems]);
-  const displayedCovers = useMemo(() => Object.fromEntries(displayedItems.map((x) => [x.id, x.cover])), [displayedItems]);
+  const displayedRef = useRef(displayedItems);
+  displayedRef.current = displayedItems;
+  const submittedRef = useRef(submitted);
+  submittedRef.current = submitted;
+  const openSearchVideo = useCallback((v: VideoCard) => {
+    const list = displayedRef.current;
+    push({
+      kind: "feed",
+      videoIds: list.map((x) => x.id),
+      index: Math.max(0, list.findIndex((x) => x.id === v.id)),
+      title: `搜索 · ${submittedRef.current}`,
+      covers: Object.fromEntries(list.map((x) => [x.id, x.cover])),
+    });
+  }, [push]);
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
@@ -197,8 +209,8 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             </button>
           )}
         </form>
-        {isIos && (editing || querying) ? <button onClick={cancelSearch} className="h-11 text-primary text-[16px]">取消</button> : <button onClick={() => push({ kind: "ranks" })} aria-label="排行榜" title="排行榜"
-          className="shrink-0 w-11 h-11 rounded-(--r-sm) flex items-center justify-center bg-primary text-on-primary pressable elev-2">
+        {isIos && (editing || querying) ? <button onClick={cancelSearch} className="h-11 text-primary text-[16px] font-medium">取消</button> : <button onClick={() => push({ kind: "ranks" })} aria-label="排行榜" title="排行榜"
+          className="shrink-0 w-10 h-10 rounded-(--r-sm) flex items-center justify-center icon-tone-amber hairline-ring pressable">
           <ITrophy size={19} />
         </button>}
       </div>
@@ -226,15 +238,15 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
               </div>
             )}
 
-            <div className="mt-5 rounded-(--r-md) bg-s2 p-3.5 a-rise">
+            <div className="mt-5 rounded-(--r-md) surface-card p-3.5 a-rise">
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-[13px] font-semibold text-on/90"><IFireF size={15} className="text-primary" />热门题材</span>
+                <span className="flex items-center gap-1.5 text-[13.5px] font-bold text-on"><IFireF size={15} className="text-primary" />热门题材</span>
                 <button onClick={() => push({ kind: "ranks" })} className="text-[11.5px] text-primary font-semibold pressable">完整榜单 ›</button>
               </div>
               <div className="flex flex-wrap gap-2 mt-3">
                 {HOT_TAGS.map((t) => (
                   <button key={t} onClick={() => submit(t)}
-                    className="px-3 h-7 rounded-(--r-ctl) bg-s3 text-[12px] text-on/85 pressable">{t}</button>
+                    className="px-3 h-7 rounded-(--r-ctl) bg-s3 hairline-ring text-[12px] text-on/85 hover:text-primary pressable">{t}</button>
                 ))}
               </div>
             </div>
@@ -311,13 +323,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             </div>
             {displayedItems.length ? (
               <>
-                <Masonry videos={displayedItems} wide={wide} onOpen={(v) => push({
-                  kind: "feed",
-                  videoIds: displayedIds,
-                  index: displayedItems.findIndex((x) => x.id === v.id),
-                  title: `搜索 · ${submitted}`,
-                  covers: displayedCovers,
-                })} />
+                <Masonry videos={displayedItems} wide={wide} onOpen={openSearchVideo} />
                 <div ref={sentinelRef} className="h-6" />
                 <div className="flex justify-center py-4">
                   {loading ? <div className="w-6 h-6 spinner" />
@@ -360,7 +366,7 @@ const RANK_TABS = [
 
 export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }) {
   const { push, toast } = useStoreActions();
-  const { lineVersion } = useUiState();
+  const { lineVersion } = useDataVersion();
   const [tab, setTab] = useState<"hot" | "recommend" | "potential">("hot");
   const [items, setItems] = useState<RankItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -419,11 +425,10 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
           }
         />
       )}
-      <div className="shrink-0 relative overflow-hidden bg-s1" style={{ paddingTop: isIos ? 0 : "var(--sat, 0px)" }}>
-        {!isIos && !isMacos && <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(90% 120% at 100% 0%, var(--p-pc) 0%, transparent 60%)", opacity: 0.32 }} />}
-        <div className={`relative px-3 pt-2 pb-4 ${wide ? "max-w-[780px] mx-auto" : ""}`}>
+      <div className="shrink-0 relative overflow-hidden bg-bg hairline-b" style={{ paddingTop: isIos ? 0 : "var(--sat, 0px)" }}>
+        <div className={`relative px-4 pt-1 pb-3.5 ${wide ? "max-w-[780px] mx-auto" : ""}`}>
           {isMacos && (
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between pt-1">
               <p className="text-xs text-mut">{meta.desc} · 每 10 分钟更新</p>
               <button onClick={refreshRank} disabled={loading} aria-label="刷新榜单" title="刷新榜单"
                 className="shrink-0 w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-mut pressable disabled:opacity-60">
@@ -432,25 +437,25 @@ export function RankPage({ onBack, wide }: { onBack: () => void; wide: boolean }
             </div>
           )}
           {!isIos && !isMacos && <>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between pt-1">
             <button onClick={onBack} aria-label="返回" className="w-10 h-10 rounded-full flex items-center justify-center text-on hover:bg-s3 pressable"><IBack size={20} /></button>
             <button onClick={refreshRank} disabled={loading} aria-label="刷新榜单" title="刷新榜单"
               className="w-9 h-9 rounded-full bg-s3 flex items-center justify-center text-mut pressable disabled:opacity-60">
               <IRefresh size={16} className={loading ? "animate-spin" : ""} />
             </button>
           </div>
-          <div className="px-2 mt-1 flex items-end justify-between">
+          <div className="px-1 mt-1 flex items-end justify-between">
             <div>
-              <div className="flex items-center gap-2">
-                <span className="shrink-0 w-9 h-9 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center"><ITrophy size={20} /></span>
-                <span className="text-[24px] font-bold tracking-wide text-on">HG 热榜</span>
+              <div className="flex items-center gap-2.5">
+                <span className="shrink-0 w-9 h-9 rounded-(--r-sm) icon-tone-amber flex items-center justify-center"><ITrophy size={20} /></span>
+                <span className="text-[24px] font-bold tracking-tight text-on">HG 热榜</span>
               </div>
-              <div className="text-[11px] text-mut mt-1">{meta.desc} · 每 10 分钟更新</div>
+              <div className="text-[11.5px] text-mut mt-1">{meta.desc} · 每 10 分钟更新</div>
             </div>
           </div>
           </>}
           <SegmentedControl
-            className="mt-3"
+            className="mt-2.5"
             ariaLabel="榜单类型"
             value={tab}
             onChange={setTab}

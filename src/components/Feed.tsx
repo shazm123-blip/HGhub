@@ -1,23 +1,25 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, cover, fmt, fmtTime, friendlyError, isAndroid, isIos, isMobile } from "../api";
 import type { Detail, Episode, Post } from "../types";
-import { useInteractions, usePlaybackPrefs, useStoreActions, useUiState } from "../store";
+import { useDataVersion, useInteractions, usePlaybackPrefs, useStoreActions, useViewportMode } from "../store";
 import { fetchVideoDetailCached, getVideoOrientation, recordVideoOrientation } from "../videoMeta";
-import { Avatar, Img, SegmentedControl, Sheet } from "./ui";
+import { Img, Sheet } from "./ui";
 import VideoSurface, { type VideoHandle } from "./VideoSurface";
 import PlayerControls from "./PlayerControls";
 import PlaybackLock from "./PlaybackLock";
+import { MobileFsClock, MobileProgressLine } from "./feed/MobileProgressLine";
+import { AmbientGlow, createOsdBus, FeedDetailSheet, FeedMobileOverlay, PlayerOsd, ScrubOverlay } from "./feed/FeedOverlays";
 import { pushBackHandler } from "../back";
-import { computeScrubTarget, formatScrubDelta } from "../scrubGesture";
-import { createProgressBus, createScrubBus, useProgress, useScrub, type PlaybackProgressBus, type ScrubBus } from "../playbackProgress";
+import { computeScrubTarget } from "../scrubGesture";
+import { createProgressBus, createScrubBus } from "../playbackProgress";
 
 const ArticlePanel = lazy(() => import("./ArticlePanel"));
 const CommentsPanel = lazy(() => import("./Panels").then((m) => ({ default: m.CommentsPanel })));
 const EpisodesPanel = lazy(() => import("./Panels").then((m) => ({ default: m.EpisodesPanel })));
 import {
-  IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IFileText, IHeart, IHeartF,
-  ILink, IList, ILockF, INext, IPauseF, IPlayF, IRefresh, IReplay, IRotate, ISearch, IStar, IStarF, IVol, IVolMute,
+  IBack, IBoltF, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IFileText, IHeart, IHeartF,
+  ILink, IList, ILockF, INext, IPauseF, IPlayF, IRefresh, IReplay, ISearch, IStar, IStarF, IVol, IVolMute,
 } from "../icons";
 
 const MAX_FEED_CACHE = 40;
@@ -40,166 +42,6 @@ function prunePlayMap(map: Record<string, string>, keepIds: Set<number>): Record
   return next;
 }
 
-function MobileProgressLine({
-  bus, scrubBus, duration, barPct, paused = false, className, onDown, onMove, onUp, onCancel,
-}: {
-  bus: PlaybackProgressBus;
-  scrubBus: ScrubBus;
-  duration: number;
-  barPct: number | null;
-  paused?: boolean;
-  className: string;
-  onDown: (e: React.PointerEvent<HTMLDivElement>) => void;
-  onMove: (e: React.PointerEvent<HTMLDivElement>) => void;
-  onUp: (e: React.PointerEvent<HTMLDivElement>) => void;
-  onCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
-}) {
-  const snap = useProgress(bus);
-  const scrub = useScrub(scrubBus);
-  const rawProgress = barPct ?? (scrub !== null ? scrub.pct / 100 : (duration ? (snap?.time ?? 0) / duration : 0));
-  const progress = Math.max(0, Math.min(1, rawProgress));
-  const buffered = Math.max(0, Math.min(1, snap?.buffered ?? 0));
-  const activeDrag = barPct !== null || scrub !== null;
-  return (
-    <div className={className} style={{ height: 26, touchAction: "none" }}
-      onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel}>
-      <div className={`absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full overflow-hidden transition-[height] duration-150 ${activeDrag ? "h-[5px]" : "h-[3px]"}`}
-        style={{ background: "rgba(255,255,255,.24)" }}>
-        <div className="absolute inset-0 w-full rounded-full"
-          style={{ background: "rgba(255,255,255,.26)", transformOrigin: "left center", transform: `scaleX(${buffered})` }} />
-        <div className="absolute inset-0 w-full rounded-full bg-white"
-          style={{ transformOrigin: "left center", transform: `scaleX(${progress})`, transition: activeDrag ? "none" : "transform .2s linear" }} />
-      </div>
-      {activeDrag && (
-        <div
-          className="pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white"
-          style={{ left: `${progress * 100}%`, boxShadow: "0 0 10px rgba(255,255,255,.7), 0 1px 4px rgba(0,0,0,.5)" }}
-        />
-      )}
-      {barPct !== null ? (
-        <div className="absolute left-1/2 -translate-x-1/2 -top-8 px-2.5 py-1 rounded-md hg-chip-strong text-[12px] font-bold tabular-nums whitespace-nowrap">
-          {fmtTime(barPct * (duration || 0))} / {fmtTime(duration)}
-        </div>
-      ) : paused && scrub === null && duration > 0 ? (
-        <div className="pointer-events-none absolute right-0 -top-6 px-2 py-0.5 rounded-full hg-chip text-[10.5px] font-semibold hg-ink-2 tabular-nums whitespace-nowrap a-fade">
-          {fmtTime(snap?.time ?? 0)} / {fmtTime(duration)}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ScrubOverlay({ bus, duration }: { bus: ScrubBus; duration: number }) {
-  const scrub = useScrub(bus);
-  if (!scrub) return null;
-  return (
-    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none">
-      <div className="px-5 py-3 rounded-2xl flex flex-col items-center min-w-[200px] max-w-[72%]"
-        style={{ background: "rgba(18,18,22,.82)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 10px 30px rgba(0,0,0,.45)" }}>
-        <div className="flex items-baseline gap-1.5 tabular-nums">
-          <span className="text-[24px] font-bold hg-ink">{fmtTime(scrub.target)}</span>
-          <span className="text-[12px] hg-ink-4">/ {fmtTime(duration)}</span>
-        </div>
-        <span className="mt-0.5 text-[12px] font-semibold hg-ink-2 tabular-nums">{formatScrubDelta(scrub.delta)}</span>
-        <div className="mt-2.5 w-full min-w-[160px] h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,.25)" }}>
-          <div className="h-full w-full bg-white" style={{ transformOrigin: "left center", transform: `scaleX(${Math.max(0, Math.min(1, scrub.pct / 100))})` }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-type OsdBus = {
-  get: () => { id: number; text: string } | null;
-  show: (text: string) => void;
-  clear: () => void;
-  subscribe: (fn: () => void) => () => void;
-};
-
-function createOsdBus(): OsdBus {
-  let cur: { id: number; text: string } | null = null;
-  let timer: number | undefined;
-  let seq = 0;
-  const listeners = new Set<() => void>();
-  const emit = () => listeners.forEach((fn) => fn());
-  return {
-    get: () => cur,
-    show: (text: string) => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      cur = { id: ++seq, text };
-      emit();
-      timer = window.setTimeout(() => {
-        timer = undefined;
-        cur = null;
-        emit();
-      }, 1150);
-    },
-    clear: () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      timer = undefined;
-      if (cur !== null) { cur = null; emit(); }
-    },
-    subscribe: (fn) => {
-      listeners.add(fn);
-      return () => { listeners.delete(fn); };
-    },
-  };
-}
-
-function PlayerOsd({ bus }: { bus: OsdBus }) {
-  const osd = useSyncExternalStore(bus.subscribe, bus.get);
-  if (!osd) return null;
-  return (
-    <div key={osd.id} className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 a-scale-in">
-      <div className="px-3.5 py-1.5 rounded-full text-[12px] font-semibold hg-ink whitespace-nowrap"
-        style={{ background: "rgba(18,18,22,.82)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 6px 20px rgba(0,0,0,.38)" }}>
-        {osd.text}
-      </div>
-    </div>
-  );
-}
-
-function AmbientBackdrop({ src }: { src: string }) {
-  const url = src ? cover(src, 160) : "";
-  const [slot, setSlot] = useState<{ active: 0 | 1; urls: [string, string] }>({
-    active: 0,
-    urls: [url, ""],
-  });
-  useEffect(() => {
-    if (!url) return;
-    setSlot((prev) => {
-      if (prev.urls[prev.active] === url) return prev;
-      const nextActive: 0 | 1 = prev.active === 0 ? 1 : 0;
-      const nextUrls: [string, string] = [prev.urls[0], prev.urls[1]];
-      nextUrls[nextActive] = url;
-      return { active: nextActive, urls: nextUrls };
-    });
-  }, [url]);
-  if (!url && !slot.urls[0] && !slot.urls[1]) return null;
-  return (
-    <div className="absolute inset-0 scale-110 blur-xl opacity-22 pointer-events-none overflow-hidden transform-gpu">
-      {[0, 1].map((idx) => (
-        slot.urls[idx] ? (
-          <img
-            key={idx}
-            src={slot.urls[idx]}
-            alt=""
-            decoding="async"
-            className="absolute inset-0 w-full h-full object-cover transition-opacity duration-500"
-            style={{ opacity: slot.active === idx && url ? 1 : 0 }}
-          />
-        ) : null
-      ))}
-      <div className="absolute inset-0" style={{ background: "radial-gradient(circle at 50% 45%, transparent 30%, rgba(0,0,0,.6) 100%)" }} />
-    </div>
-  );
-}
-
-function MobileFsClock({ bus }: { bus: PlaybackProgressBus }) {
-  const snap = useProgress(bus);
-  return <span className="shrink-0 text-[11.5px] font-semibold hg-ink-2 tabular-nums">{fmtTime(snap?.time ?? 0)}</span>;
-}
-
 type Props = {
   videoIds: number[];
   startIndex?: number;
@@ -220,7 +62,8 @@ type Props = {
 export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind = "video", active, bottomInset, onBack, onNearEnd, onView, startEp, startTime, initialCovers }: Props) {
   const { changeInteraction, toast, addHistory, getWatchProgress, setTheater, setFs, setLinePickerOpen, setTab, searchFor, bumpHomeRefresh } = useStoreActions();
   const { isLiked, isFav, follows } = useInteractions();
-  const { theater, fs, lineVersion } = useUiState();
+  const { theater, fs } = useViewportMode();
+  const { lineVersion } = useDataVersion();
   const { muted, setMuted, volume, setVolume, landscapeFitPref, setLandscapeFitPref, playbackRate: rate, setPlaybackRate: setRate } = usePlaybackPrefs();
   const isDesktop = !isMobile;
 
@@ -307,11 +150,17 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const vpLandscapeRef = useRef(vpLandscape);
 
 
-  /* 桌面：鼠标闲置 2.8s 自动隐藏播放器 UI（沉浸） */
+  /* 桌面：鼠标闲置 2.8s 自动隐藏播放器 UI（节流重置定时器，避免每次像素移动频繁 clear/setTimeout） */
   const [idle, setIdle] = useState(false);
+  const idleRef = useRef(false);
+  idleRef.current = idle;
+  const lastWakeRef = useRef(0);
   const idleTimer = useRef<number | undefined>(undefined);
   const wake = useCallback(() => {
-    setIdle(false);
+    const now = Date.now();
+    if (!idleRef.current && now - lastWakeRef.current < 260) return;
+    lastWakeRef.current = now;
+    if (idleRef.current) setIdle(false);
     window.clearTimeout(idleTimer.current);
     idleTimer.current = window.setTimeout(() => setIdle(true), 2800);
   }, []);
@@ -1703,8 +1552,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
       className={`hg-player-ui absolute inset-0 overflow-hidden bg-black player-root ${controlsLocked ? "is-locked" : ""} ${isDesktop ? "player-surface" : ""} ${theater ? "is-theater" : ""} ${panel ? "has-panel" : ""} ${isDesktop && idle ? "is-idle" : ""}`}
       onPointerMove={() => { if (isDesktop) wake(); }}>
       <div className="absolute inset-0" inert={controlsLocked}>
-      {/* 氛围背景（双层交叉淡入 + 160px 低清图，全屏及移动端隐藏） */}
-      {!activeFs && isDesktop && <AmbientBackdrop src={meta.cover} />}
+      {/* 桌面端轻氛围背光（零模糊低功耗，全屏及移动端隐藏） */}
+      {!activeFs && isDesktop && <AmbientGlow />}
 
       <div ref={boxRef} onScroll={onScroll}
         className={`absolute inset-y-0 left-0 no-bar ${activeFs ? "overflow-hidden" : "overflow-y-scroll snap-y snap-mandatory overscroll-y-contain"}`}
@@ -1912,8 +1761,8 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                         </button>
                       )}
                       <div className={`absolute z-30 transition-opacity duration-200 ${fsShow ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
-                        style={{ left: fsLeft, right: fsRight, bottom: fsBarBottom, height: 26 }}>
-                        <MobileProgressLine bus={progressBus} scrubBus={scrubBus} duration={duration} barPct={barPct}
+                        style={{ left: fsLeft, right: fsRight, bottom: fsBarBottom, height: 24 }}>
+                        <MobileProgressLine bus={progressBus} scrubBus={scrubBus} duration={duration} barPct={barPct} visible={fsShow}
                           className="relative h-full" onDown={onBarDown} onMove={onBarMove} onUp={onBarUp} onCancel={onBarCancel} />
                       </div>
                       <div className={`absolute z-40 flex items-center gap-2.5 transition-opacity duration-200 ${fsShow ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
@@ -1937,7 +1786,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                             <INext size={16} strokeWidth={1.8} />
                           </button>
                         )}
-                        <MobileFsClock bus={progressBus} />
+                        <MobileFsClock bus={progressBus} visible={fsShow} />
                         <div className="flex-1" />
                         {episodes.length > 1 && (
                           <button
@@ -2094,36 +1943,41 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                 </div>
               )}
 
-              {/* 右侧操作栏（移动端）：点赞 / 收藏 / 评论 / 全屏 / 分享
-                  颜色写死不跟主题走：浅色主题下这些字必须仍是白色 */}
+              {/* 移动端：右侧互动列 + 底部单行操作栏 + 贴底 2px 进度线 */}
               {isActive && !activeFs && !isDesktop && (
-                <div className="absolute right-3 z-20 flex flex-col items-center gap-3.5"
-                  style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 96}px)` }}>
-                  {kind === "video" && (
-                    <button onClick={onLike} className="flex flex-col items-center gap-1 pressable" aria-pressed={liked} aria-label="喜欢">
-                      <span key={heartBurst} className={heartBurst ? "a-pop" : ""}>
-                        {liked ? <IHeartF size={28} className="text-neon" /> : <IHeart size={28} className="hg-ink hg-ov-shadow" />}
-                      </span>
-                      <span className="text-[10.5px] hg-ink-2 hg-ov-shadow tabular-nums">{likeCount > 0 ? fmt(likeCount) : "喜欢"}</span>
-                    </button>
-                  )}
-                  <button onClick={onFav} className="flex flex-col items-center gap-1 pressable" aria-pressed={favorited} aria-label="收藏">
-                    {favorited ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">收藏</span>
-                  </button>
-                  <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label="评论">
-                    <ICommentF size={26} className="hg-ink hg-ov-shadow" />
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">评论</span>
-                  </button>
-                  <button onClick={enterFs} className="flex flex-col items-center gap-1 pressable" aria-label="全屏">
-                    <IExpand size={26} className="hg-ink hg-ov-shadow" />
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">全屏</span>
-                  </button>
-                  <button onClick={shareLink} className="flex flex-col items-center gap-1 pressable" aria-label="分享">
-                    <ILink size={25} className="hg-ink hg-ov-shadow" />
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">分享</span>
-                  </button>
-                </div>
+                <FeedMobileOverlay
+                  kind={kind}
+                  title={meta.title}
+                  curEp={curEp}
+                  episodesCount={episodes.length}
+                  hasNextEp={!!nextEp}
+                  nextEpNum={nextEp?.ep_num}
+                  isLandscapeVideo={isLandscapeVideo}
+                  portraitFit={portraitFit}
+                  liked={liked}
+                  likeCount={likeCount}
+                  heartBurst={heartBurst}
+                  favorited={favorited}
+                  bottomInset={bottomInset}
+                  progressBus={progressBus}
+                  scrubBus={scrubBus}
+                  duration={duration}
+                  barPct={barPct}
+                  paused={paused}
+                  onLike={onLike}
+                  onFav={onFav}
+                  onOpenComments={() => setPanel("comments")}
+                  onEnterFs={enterFs}
+                  onShare={shareLink}
+                  onOpenEpisodes={() => setPanel("episodes")}
+                  onNextEp={() => { goNextEp(); }}
+                  onOpenDetail={() => setPanel("detail")}
+                  onTogglePortraitFit={togglePortraitFit}
+                  onBarDown={onBarDown}
+                  onBarMove={onBarMove}
+                  onBarUp={onBarUp}
+                  onBarCancel={onBarCancel}
+                />
               )}
 
               {/* 右侧操作栏（桌面） */}
@@ -2215,53 +2069,6 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                 </button>
               </div>
               )}
-
-              {/* 移动端：标题 + 选集/详情/横屏操作胶囊 + 进度线 */}
-              {isActive && !activeFs && !isDesktop && (
-                <div className="absolute inset-x-0 z-20 pointer-events-none" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
-                  <div className="absolute inset-x-0 bottom-0 h-[210px] pointer-events-none"
-                    style={{ background: "linear-gradient(0deg, rgba(0,0,0,.84) 0%, rgba(0,0,0,.44) 48%, transparent 100%)" }} />
-                  <p className="select-text relative pl-4 pr-[72px] pb-2 text-[14px] font-semibold leading-snug hg-ink hg-ov-shadow clamp-2 pointer-events-none">{meta.title}</p>
-                  <div className="relative pt-1 pb-2">
-                    <div className="pl-4 pr-[72px] flex flex-wrap items-center gap-1.5">
-                      {kind === "video" && (
-                        <button type="button" onClick={() => setPanel("episodes")}
-                          className="pointer-events-auto hg-chip-strong px-2.5 h-7 rounded-full flex items-center gap-1 text-[11.5px] font-semibold hg-ink pressable">
-                          <IList size={12} />
-                          {episodes.length > 0 ? `选集 · ${curEp}/${episodes.length}` : `第 ${curEp} 集`}
-                        </button>
-                      )}
-                      {nextEp && (
-                        <button type="button" onClick={() => goNextEp()}
-                          aria-label={`下一集（第 ${nextEp.ep_num} 集）`}
-                          className="pointer-events-auto hg-chip px-2.5 h-7 rounded-full flex items-center gap-1 text-[11.5px] font-semibold hg-ink pressable">
-                          <INext size={11} strokeWidth={1.8} />下一集
-                        </button>
-                      )}
-                      <button type="button" onClick={() => setPanel("detail")}
-                        className="pointer-events-auto hg-chip px-2.5 h-7 rounded-full flex items-center gap-0.5 text-[11.5px] font-medium hg-ink-2 pressable">
-                        {kind === "post" ? "查看详情" : "详情"}<IChevR size={11} />
-                      </button>
-                      {isLandscapeVideo && (
-                        <>
-                          <button type="button" onClick={enterFs}
-                            className="pointer-events-auto hg-chip-strong px-2.5 h-7 rounded-full flex items-center gap-1 text-[11.5px] font-semibold hg-ink pressable">
-                            <IRotate size={12} />横屏看
-                          </button>
-                          <button type="button" onClick={togglePortraitFit}
-                            className="pointer-events-auto hg-chip px-2.5 h-7 rounded-full text-[11.5px] font-medium hg-ink-2 pressable">
-                            {portraitFit === "contain" ? "铺满" : "完整"}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                    {isActive && (
-                      <MobileProgressLine bus={progressBus} scrubBus={scrubBus} duration={duration} barPct={barPct} paused={paused}
-                        className="mx-4 mt-2.5 relative pointer-events-auto" onDown={onBarDown} onMove={onBarMove} onUp={onBarUp} onCancel={onBarCancel} />
-                    )}
-                  </div>
-                </div>
-              )}
                 </>
               )}
             </section>
@@ -2329,101 +2136,20 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
             </div>
           </Sheet>
 
-          <Sheet open={panel === "detail" || panel === "episodes"} onClose={() => setPanel(null)}>
-            <div className="flex flex-col" style={{ height: "min(72dvh, calc(100dvh - var(--sat, 0px) - 24px))" }}>
-              {/* 双栏抽屉：详情 / 选集 */}
-              <div className="shrink-0 flex items-center gap-2 px-4 pb-2">
-                <SegmentedControl
-                  className="flex-1"
-                  ariaLabel="剧集信息切换"
-                  value={panel === "episodes" ? "episodes" : "detail"}
-                  onChange={(k) => setPanel(k)}
-                  options={[{ value: "detail", label: "详情" }, { value: "episodes", label: "选集" }]}
-                />
-                <button onClick={() => setPanel(null)} aria-label="关闭"
-                  className="w-8 h-8 rounded-full bg-s3 flex items-center justify-center text-mut pressable">
-                  <IClose size={14} />
-                </button>
-              </div>
-
-              <div className="flex-1 min-h-0">
-                {panel === "episodes" ? (
-                  <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-7 h-7 spinner" /></div>}>
-                    <EpisodesPanel bare videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setPanel(null)} />
-                  </Suspense>
-                ) : (
-                  <div className="h-full scroll-y px-4 pb-5">
-                    {/* 封面 / 标题 / 评分 / 数据 */}
-                    <div className="flex gap-3">
-                      <div className="relative w-[84px] shrink-0 rounded-(--r-sm) overflow-hidden bg-s3" style={{ aspectRatio: "3 / 4" }}>
-                        <Img src={meta.cover} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13.5px] font-bold text-on leading-snug clamp-2">{meta.title}</div>
-                        <div className="flex items-center flex-wrap gap-2 mt-1.5">
-                          {!!meta.score && <span className="text-[12px] font-bold text-amber">{meta.score.toFixed(1)} 分</span>}
-                          {episodes.length > 0 && <span className="text-[11px] text-mut">共 {episodes.length} 集</span>}
-                          {!!orientationBadge && <span className="px-1.5 py-0.5 rounded bg-s3 text-[10px] font-medium text-mut">{orientationBadge}</span>}
-                        </div>
-                        <div className="flex gap-3 mt-2 text-[10.5px] text-mut">
-                          <span>点赞 {fmt(meta.like)}</span>
-                          <span>收藏 {fmt(meta.collect)}</span>
-                          <span>评论 {fmt(meta.comment)}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 作者 + 关注 */}
-                    <div className="mt-4 flex items-center gap-2.5 rounded-(--r-md) bg-s2 p-2.5">
-                      <button
-                        type="button"
-                        disabled={!meta.author || meta.author === "黄果短剧" || meta.author === "黄果吃瓜"}
-                        onClick={() => { setPanel(null); searchFor(meta.author); }}
-                        className="flex items-center gap-2.5 flex-1 min-w-0 text-left pressable disabled:cursor-default">
-                        <Avatar size={34} name={meta.author} hue={220} />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[12.5px] font-semibold text-on truncate">{meta.author}</div>
-                          <div className="text-[10px] text-mut">
-                            {meta.author && meta.author !== "黄果短剧" && meta.author !== "黄果吃瓜" ? "作者 · 点按搜作品" : "作者"}
-                          </div>
-                        </div>
-                      </button>
-                      {meta.authorId > 0 && (
-                        <button onClick={onFollow}
-                          className={`h-7 px-3 rounded-full text-[11px] font-semibold pressable ${follows.includes(meta.authorId) ? "bg-s3 text-mut" : "bg-primary text-on-primary"}`}>
-                          {follows.includes(meta.authorId) ? "已关注" : "+ 关注"}
-                        </button>
-                      )}
-                    </div>
-
-                    {/* 题材标签（点按直达搜索） */}
-                    {!!meta.tags.length && (
-                      <div className="mt-4">
-                        <div className="text-[11px] font-semibold text-dim mb-1.5">题材标签</div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {meta.tags.slice(0, 12).map((tag) => (
-                            <button
-                              key={tag}
-                              type="button"
-                              onClick={() => { setPanel(null); searchFor(tag); }}
-                              className="px-2.5 h-7 rounded-(--r-ctl) bg-s3 text-[11.5px] text-on/85 hover:text-primary pressable">
-                              #{tag}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 简介 */}
-                    <div className="mt-4">
-                      <div className="text-[11px] font-semibold text-dim mb-1.5">简介</div>
-                      <p className="text-[11.5px] leading-relaxed text-mut whitespace-pre-wrap">{meta.desc || "暂无简介"}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </Sheet>
+          <FeedDetailSheet
+            panel={panel}
+            curId={curId}
+            curEp={curEp}
+            episodes={episodes}
+            meta={meta}
+            orientationBadge={orientationBadge}
+            followed={follows.includes(meta.authorId)}
+            onChangePanel={setPanel}
+            onClose={() => setPanel(null)}
+            onPickEp={pickEp}
+            onFollow={onFollow}
+            onSearch={searchFor}
+          />
         </>
       )}
       </div>

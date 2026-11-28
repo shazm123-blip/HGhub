@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Feed from "../components/Feed";
 import { api, cover } from "../api";
 import type { VideoCard } from "../types";
-import { useStoreActions, useUiState } from "../store";
+import { useStoreActions, useDataVersion } from "../store";
 import { IRefresh } from "../icons";
 import { Empty } from "../components/ui";
 
@@ -99,7 +99,7 @@ function pickRandomPage(visited: Set<number>, totalPages: number): number | null
 
 export default function Home({ active, bottomInset }: { active: boolean; bottomInset: number }) {
   const { toast, setLinePickerOpen, getHistoryIds } = useStoreActions();
-  const { lineVersion, homeRefresh } = useUiState();
+  const { lineVersion, homeRefresh } = useDataVersion();
   const initialPersist = useMemo(loadFeedState, []);
   const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(loadHomeSnapshot);
   const [items, setItems] = useState<VideoCard[]>([]);
@@ -323,14 +323,27 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
       ) : (
         <div className="absolute inset-0 overflow-hidden bg-black flex flex-col items-center justify-center">
           {snapshot?.cover && (
-            <img src={cover(snapshot.cover, 480)} alt="" decoding="async"
-              className="absolute inset-0 w-full h-full object-cover opacity-30 blur-md scale-105 pointer-events-none" />
+            <>
+              <img
+                src={cover(snapshot.cover, 720)}
+                alt=""
+                decoding="async"
+                className="absolute inset-0 w-full h-full object-cover opacity-45 pointer-events-none"
+              />
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{ background: "linear-gradient(180deg, rgba(0,0,0,.45) 0%, rgba(0,0,0,.35) 45%, rgba(0,0,0,.92) 100%)" }}
+              />
+            </>
           )}
           <div className="relative z-10 flex flex-col items-center gap-3 px-6 text-center">
             <div className="w-9 h-9 spinner" />
-            <div className="rounded-full bg-black/50 px-3.5 py-1.5 text-[11.5px] font-medium text-white/75">
+            <div className="rounded-full hg-chip-strong px-4 py-1.5 text-[12px] font-medium text-white/85">
               正在准备推荐短剧…
             </div>
+            {snapshot?.title && (
+              <div className="max-w-[260px] text-[12px] text-white/55 truncate">{snapshot.title}</div>
+            )}
           </div>
         </div>
       )}

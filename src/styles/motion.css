@@ -1,0 +1,110 @@
+/* ===================================================================
+   HGhub Design System 2.0 — 动效曲线、骨架微光与省电/无障碍降级
+   =================================================================== */
+
+@keyframes kf-pop { 0%{transform:scale(1)} 35%{transform:scale(1.36)} 64%{transform:scale(.95)} 100%{transform:scale(1)} }
+.a-pop { animation: kf-pop .38s var(--ease-snappy); }
+
+@keyframes kf-heart-float {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(.45) rotate(var(--rot, -8deg)); }
+  22%  { opacity: 1; transform: translate(-50%, -62%) scale(1.18) rotate(var(--rot, -8deg)); }
+  46%  { opacity: 1; transform: translate(-50%, -74%) scale(1) rotate(var(--rot, -8deg)); }
+  100% { opacity: 0; transform: translate(-50%, -135%) scale(1.25) rotate(var(--rot, -8deg)); }
+}
+.a-heart-float { animation: kf-heart-float .76s cubic-bezier(.2, .8, .2, 1) forwards; }
+
+@keyframes kf-fade { from{opacity:0} to{opacity:1} }
+.a-fade { animation: kf-fade .18s ease both; }
+
+@keyframes kf-rise { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+.a-rise { animation: kf-rise .32s var(--ease-spring) both; }
+
+@keyframes kf-sheet { from{transform:translateY(100%)} to{transform:translateY(0)} }
+.a-sheet { animation: kf-sheet .32s var(--ease-spring) both; }
+
+@keyframes kf-sheet-out { from{transform:translateY(0)} to{transform:translateY(100%)} }
+.a-sheet-out { animation: kf-sheet-out .20s cubic-bezier(.3, 0, .8, .15) both; }
+
+@keyframes kf-panel-in { from{transform:translateX(100%)} to{transform:translateX(0)} }
+.a-panel-in { animation: kf-panel-in .26s var(--ease-spring) both; }
+
+@keyframes kf-panel-out { from{transform:translateX(0)} to{transform:translateX(100%)} }
+.a-panel-out { animation: kf-panel-out .18s ease-in both; }
+
+@keyframes kf-scale-in { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
+.a-scale-in { animation: kf-scale-in .22s var(--ease-spring) both; }
+
+@keyframes kf-page-in { from{transform:translateX(100%)} to{transform:none} }
+.a-page-in { animation: kf-page-in .30s var(--ease-spring) both; }
+
+@keyframes kf-page-out { from{transform:translateX(0)} to{transform:translateX(100%)} }
+.a-page-out { animation: kf-page-out .20s cubic-bezier(.3, 0, .8, .15) both; }
+
+.win-page-in { animation: kf-page-in .24s var(--ease-spring) both; }
+.win-page-out { animation: kf-page-out .18s ease-in both; }
+
+@keyframes kf-toast { from{opacity:0;transform:translateY(10px) scale(.96)} to{opacity:1;transform:translateY(0) scale(1)} }
+.a-toast { animation: kf-toast .24s var(--ease-spring) both; }
+
+@keyframes kf-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@layer components {
+  .shimmer { position: relative; background: var(--p-s2); overflow: hidden; }
+  .shimmer::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(105deg, transparent 20%, var(--p-s3) 50%, transparent 80%);
+    animation: kf-shimmer 1.45s linear infinite;
+  }
+}
+
+@keyframes kf-spin { to { transform: rotate(360deg); } }
+.spinner {
+  border: 2.5px solid var(--p-spinner-track);
+  border-top-color: var(--p-primary);
+  border-radius: 999px;
+  animation: kf-spin .78s linear infinite;
+}
+
+/* Apple 平台弹簧细调 */
+html.plat-ios .a-page-in { animation-duration: var(--dur-push); animation-timing-function: var(--ease-spring); }
+@keyframes apple-sheet {
+  from { transform: translateY(100%); }
+  78%  { transform: translateY(0) scaleY(1.008); }
+  to   { transform: none; }
+}
+html.plat-ios .a-sheet { animation-name: apple-sheet; animation-duration: var(--dur-sheet); animation-timing-function: var(--ease-spring); transform-origin: bottom; }
+@keyframes apple-page { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+html.plat-macos .win-page-in { animation: apple-page .22s var(--ease-spring) both; }
+@keyframes apple-like { 0% { transform: scale(.86); } 44% { transform: scale(1.22); } 74% { transform: scale(.96); } 100% { transform: scale(1); } }
+:is(html.plat-ios, html.plat-macos) .a-pop { display: inline-flex; animation: apple-like .38s ease-out; }
+
+/* 极致省电模式（用户可选开关）：彻底停用所有 Web 毛玻璃与装饰动画 */
+html.power-saver .mat,
+html.power-saver .mat-thick,
+html.power-saver .ios-navigation.compact,
+html.power-saver .sheet-surface,
+html.power-saver .modal-surface,
+html.power-saver .a-toast,
+html.power-saver .player-speed-menu,
+html.power-saver [class*="backdrop-blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html.power-saver .mat,
+html.power-saver .ios-navigation.compact { background: var(--p-s1) !important; }
+html.power-saver .mat-thick,
+html.power-saver .sheet-surface,
+html.power-saver .modal-surface,
+html.power-saver .a-toast { background: var(--p-s2) !important; }
+html.power-saver .shimmer::after { animation: none !important; display: none; }
+html.power-saver .a-rise { animation: none !important; }
+
+/* 系统减弱动态效果 */
+@media (prefers-reduced-motion: reduce) {
+  .a-pop, .a-page-in, .a-page-out, .win-page-in, .win-page-out,
+  .a-sheet, .a-sheet-out, .a-panel-in, .a-panel-out, .a-scale-in,
+  .a-rise, .a-toast, .shimmer::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .pressable, .segment-indicator, .win-sidebar { transition: none !important; }
+}

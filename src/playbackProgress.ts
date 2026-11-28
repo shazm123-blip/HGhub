@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 export type ProgressSnapshot = {
   time: number;
@@ -63,6 +63,21 @@ export function useProgress(bus?: PlaybackProgressBus): ProgressSnapshot | null 
     bus ? bus.subscribe : noopSubscribe,
     bus ? bus.get : getNull,
   );
+}
+
+/** 仅在整秒变化时通知 React，且隐藏时完全退订（0 commits/sec），专用于播放时钟文本显示 */
+export function useProgressClock(bus: PlaybackProgressBus | undefined, enabled = true): number {
+  const [sec, setSec] = useState(() => Math.floor(bus?.get().time ?? 0));
+  useEffect(() => {
+    if (!bus || !enabled) return undefined;
+    const sync = () => {
+      const next = Math.floor(bus.get().time || 0);
+      setSec((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    return bus.subscribe(sync);
+  }, [bus, enabled]);
+  return sec;
 }
 
 export type ScrubSnapshot = { pct: number; target: number; delta: number };

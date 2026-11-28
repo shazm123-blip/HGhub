@@ -2,10 +2,10 @@ import IosNavigation from "../components/IosNavigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, isIos, isMacos, fmt } from "../api";
 import type { Post, VideoCard } from "../types";
-import { useStoreActions, useUiState } from "../store";
+import { useDataVersion, useStoreActions } from "../store";
 import { Masonry, RowCard } from "../components/cards";
 import { CardGridSkeleton, Empty, Img, PullToRefresh, RowCardsSkeleton, SegmentedControl } from "../components/ui";
-import { IBack, IChevR, IClapper, IFileText, IGrid, IRefresh, ISparkF, IStarsF, ITrophy } from "../icons";
+import { IBack, IChevR, IClapper, IFileText, IFireF, IGrid, IRefresh, ISparkF, IStarsF, ITrophy } from "../icons";
 
 export const CHANNELS = [
   { cate: "original", name: "黄果原创", desc: "原创短剧与漫剧" },
@@ -70,7 +70,7 @@ function HorizontalRow({ wide, children }: { wide: boolean; children: ReactNode 
 /* ================= 分类总览 ================= */
 export default function Category({ wide, active }: { wide: boolean; active: boolean }) {
   const { push } = useStoreActions();
-  const { lineVersion } = useUiState();
+  const { lineVersion } = useDataVersion();
   const [rows, setRows] = useState<Record<string, VideoCard[]>>({});
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -161,17 +161,32 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
         </button>
       </div>
       )}
-      <PullToRefresh onRefresh={refreshAll} refreshing={refreshing} className="flex-1 scroll-y pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
-        {/* 排行榜入口 */}
-        <button onClick={() => push({ kind: "ranks" })}
-          className="mx-4 mb-5 w-[calc(100%-2rem)] flex items-center gap-3 rounded-(--r-md) bg-s2 p-3.5 text-left pressable elev-1">
-          <span className="w-10 h-10 rounded-(--r-sm) bg-pc text-on-pc flex items-center justify-center shrink-0"><ITrophy size={20} /></span>
-          <span className="flex-1">
-            <span className="block text-[14.5px] font-semibold text-on">排行榜</span>
-            <span className="block text-[11px] text-mut mt-0.5">热播榜 · 推荐榜 · 潜力榜</span>
-          </span>
-          <IChevR size={16} className="shrink-0 text-mut" />
-        </button>
+      <PullToRefresh onRefresh={refreshAll} refreshing={refreshing} className="flex-1 scroll-y pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 68px)" }}>
+        {/* 顶部双精选微光入口：HG 热榜 + 黄果吃瓜 */}
+        <div className="px-4 mb-6 grid grid-cols-2 gap-2.5">
+          <button
+            onClick={() => push({ kind: "ranks" })}
+            className="feature-card-amber rounded-(--r-md) p-3.5 text-left pressable flex items-center gap-2.5 min-w-0">
+            <span className="w-9 h-9 rounded-(--r-sm) icon-tone-amber flex items-center justify-center shrink-0">
+              <ITrophy size={19} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-bold text-on truncate">HG 热榜</span>
+              <span className="block text-[10.5px] text-mut mt-0.5 truncate">热播 · 推荐 · 潜力</span>
+            </span>
+          </button>
+          <button
+            onClick={() => push({ kind: "posts" })}
+            className="feature-card-coral rounded-(--r-md) p-3.5 text-left pressable flex items-center gap-2.5 min-w-0">
+            <span className="w-9 h-9 rounded-(--r-sm) icon-tone-rose flex items-center justify-center shrink-0">
+              <IFireF size={19} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-bold text-on truncate">黄果吃瓜</span>
+              <span className="block text-[10.5px] text-mut mt-0.5 truncate">圈内爆料 · 每日更新</span>
+            </span>
+          </button>
+        </div>
 
         {CHANNELS.map((c, ci) => (
           <ChannelPreviewSection
@@ -188,14 +203,14 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
         ))}
 
         {/* 吃瓜 */}
-        <section aria-label="黄果吃瓜" className="mb-5 a-rise">
+        <section aria-label="黄果吃瓜" className="mb-6 a-rise">
           <button onClick={() => push({ kind: "posts" })}
             className="w-full flex items-center gap-2.5 px-4 mb-2.5 text-left pressable group">
-            <span className="w-[36px] h-[36px] rounded-(--r-sm) tonal flex items-center justify-center shrink-0 text-primary">
-              <IFileText size={19} strokeWidth={1.9} />
+            <span className="w-[34px] h-[34px] rounded-(--r-sm) icon-tone-rose flex items-center justify-center shrink-0">
+              <IFileText size={18} strokeWidth={1.9} />
             </span>
             <span className="flex-1 min-w-0">
-              <span className="block text-[15.5px] font-semibold text-on leading-tight">黄果吃瓜</span>
+              <span className="block text-[15.5px] font-bold text-on leading-tight">黄果吃瓜</span>
               <span className="block text-[11px] text-mut mt-0.5 truncate">圈内爆料 · 每日更新</span>
             </span>
             <span className="shrink-0 flex items-center gap-0.5 text-[12px] text-mut group-hover:text-primary transition-colors">
@@ -205,13 +220,13 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
           <HorizontalRow wide={wide}>
             {posts.map((post) => (
               <button key={post.id} onClick={() => push({ kind: "post", id: post.id })}
-                className="row-cover w-[108px] shrink-0 text-left snap-start pressable">
-                <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
+                className="row-cover w-[112px] shrink-0 text-left snap-start pressable">
+                <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1">
                   <Img src={post.cover} />
-                  <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
-                  <span className="absolute bottom-1.5 right-1.5 text-[10px] font-semibold text-white/90 tsh">{fmt(post.hot)}</span>
+                  <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/62 to-transparent pointer-events-none" />
+                  <span className="absolute bottom-1.5 right-1.5 text-[10px] font-semibold text-white/92 tsh tabular-nums">{fmt(post.hot)}</span>
                 </div>
-                <div className="cover-title mt-1.5 text-[12px] font-medium text-on clamp-1 leading-tight">{post.title}</div>
+                <div className="cover-title mt-2 text-[12.5px] font-semibold text-on clamp-1 leading-tight">{post.title}</div>
               </button>
             ))}
             {!posts.length && <PreviewStatus name="黄果吃瓜" loading={loading.posts !== false} error={errors.posts} onRetry={() => void loadPreview("posts")} />}
@@ -251,14 +266,14 @@ const ChannelPreviewSection = memo(function ChannelPreviewSection({
   }, [push, rowIds, rowCovers, channel.name]);
 
   return (
-    <section aria-label={channel.name} className="mb-5 a-rise" style={{ animationDelay: `${Math.min(ci * 50, 300)}ms` }}>
+    <section aria-label={channel.name} className="mb-6 a-rise" style={{ animationDelay: `${Math.min(ci * 50, 200)}ms` }}>
       <button onClick={() => push({ kind: "channel", cate: channel.cate, name: channel.name })}
         className="w-full flex items-center gap-2.5 px-4 mb-2.5 text-left pressable group">
-        <span className="w-[36px] h-[36px] rounded-(--r-sm) tonal flex items-center justify-center shrink-0 text-primary">
-          {CHANNEL_ICON[channel.cate] || <IGrid size={19} strokeWidth={1.9} />}
+        <span className="w-[34px] h-[34px] rounded-(--r-sm) icon-tone-amber flex items-center justify-center shrink-0">
+          {CHANNEL_ICON[channel.cate] || <IGrid size={18} strokeWidth={1.9} />}
         </span>
         <span className="flex-1 min-w-0">
-          <span className="block text-[15.5px] font-semibold text-on leading-tight">{channel.name}</span>
+          <span className="block text-[15.5px] font-bold text-on leading-tight">{channel.name}</span>
           <span className="block text-[11px] text-mut mt-0.5 truncate">{channel.desc}</span>
         </span>
         <span className="shrink-0 flex items-center gap-0.5 text-[12px] text-mut group-hover:text-primary transition-colors">
@@ -293,7 +308,7 @@ function PreviewStatus({ name, loading, error, onRetry }: { name: string; loadin
 /* ================= 频道详情页 ================= */
 export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: string; onBack: () => void; wide: boolean }) {
   const { push } = useStoreActions();
-  const { lineVersion } = useUiState();
+  const { lineVersion } = useDataVersion();
   const [sort, setSort] = useState<"new" | "hot">("new");
   const [onlyFinished, setOnlyFinished] = useState(false);
   const [items, setItems] = useState<VideoCard[]>([]);
@@ -383,6 +398,18 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
     () => (onlyFinished ? items.filter((v) => v.is_finished) : items),
     [items, onlyFinished],
   );
+  const displayedRef = useRef(displayed);
+  displayedRef.current = displayed;
+  const openChannelVideo = useCallback((v: VideoCard) => {
+    const list = displayedRef.current;
+    push({
+      kind: "feed",
+      videoIds: list.map((x) => x.id),
+      index: Math.max(0, list.findIndex((x) => x.id === v.id)),
+      title: name,
+      covers: Object.fromEntries(list.map((x) => [x.id, x.cover])),
+    });
+  }, [push, name]);
   const subtitleText = `共 ${total || items.length} 部 · 已加载 ${page}/${Math.max(pages, 1)} 页`;
 
   return (
@@ -445,13 +472,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
       <PullToRefresh ref={listRef} onRefresh={() => loadMore(true)} refreshing={refreshing}
         className="flex-1 scroll-y px-4 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {displayed.length ? (
-          <Masonry videos={displayed} wide={wide} onOpen={(v) => push({
-            kind: "feed",
-            videoIds: displayed.map((x) => x.id),
-            index: displayed.findIndex((x) => x.id === v.id),
-            title: name,
-            covers: Object.fromEntries(displayed.map((x) => [x.id, x.cover])),
-          })} />
+          <Masonry videos={displayed} wide={wide} onOpen={openChannelVideo} />
         ) : items.length > 0 && onlyFinished ? (
           <Empty
             icon={<IGrid size={26} />}

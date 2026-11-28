@@ -42,7 +42,7 @@ export function EpisodesPanel({ videoId, episodes, current, onPick, onClose, bar
         </div>
       )}
       <div className="flex-1 scroll-y px-4 pb-4">
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-4 gap-2.5">
           {list.map((e) => {
             const selected = e.ep_num === current;
             return (
@@ -50,10 +50,10 @@ export function EpisodesPanel({ videoId, episodes, current, onPick, onClose, bar
                 ref={selected ? activeEpRef : undefined}
                 key={e.ep_num}
                 onClick={() => onPick(e.ep_num)}
-                className={`min-h-[44px] py-1.5 px-1 rounded-(--r-sm) flex flex-col items-center justify-center pressable ${selected ? "bg-primary text-on-primary" : "bg-s3 text-on/85"}`}>
-                <span className="text-[12.5px] font-semibold leading-tight tabular-nums">{e.ep_num}</span>
+                className={`min-h-[52px] py-2 px-1 rounded-(--r-sm) flex flex-col items-center justify-center pressable ${selected ? "brand-grad glow-neon" : "bg-s3/90 hairline-ring text-on/90 hover:bg-s4"}`}>
+                <span className="text-[14px] font-bold leading-tight tabular-nums">{e.ep_num}</span>
                 {e.duration > 0 && (
-                  <span className={`text-[9.5px] leading-tight mt-0.5 tabular-nums ${selected ? "opacity-80" : "text-dim"}`}>
+                  <span className={`text-[10px] leading-tight mt-0.5 tabular-nums ${selected ? "opacity-80 font-medium" : "text-dim"}`}>
                     {dur(e.duration)}
                   </span>
                 )}

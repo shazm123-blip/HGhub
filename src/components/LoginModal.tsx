@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { api, getApiBase, isFixedLine, isMobile } from "../api";
 import type { User } from "../types";
-import { useStoreActions, useUiState } from "../store";
+import { useModalUi, useStoreActions } from "../store";
 import { Modal, SegmentedControl, Sheet } from "./ui";
 import { IClose, IEye, IEyeOff, ILogin } from "../icons";
 
 export default function LoginModal() {
   const { setLoginOpen, setLinePickerOpen, prepareLogin, toast } = useStoreActions();
-  const { loginOpen } = useUiState();
+  const { loginOpen } = useModalUi();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

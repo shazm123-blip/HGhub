@@ -2,7 +2,7 @@ import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, isIos, isMacos, cover, fmt, isMobile } from "../api";
 import type { Comment, Post } from "../types";
-import { useInteractions, usePlaybackPrefs, useSessionUser, useStoreActions, useUiState } from "../store";
+import { useDataVersion, useInteractions, usePlaybackPrefs, useSecurityUi, useSessionUser, useStoreActions } from "../store";
 import { Avatar, CardGridSkeleton, Empty, Img, PostDetailSkeleton, PullToRefresh } from "../components/ui";
 import Player from "../components/Player";
 import { pushBackHandler } from "../back";
@@ -12,7 +12,7 @@ import { handleArticleClick, sanitizeHtml } from "../html";
 /* ================= 吃瓜列表 ================= */
 export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean }) {
   const { push } = useStoreActions();
-  const { lineVersion } = useUiState();
+  const { lineVersion } = useDataVersion();
   const [items, setItems] = useState<Post[]>([]);
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
@@ -127,23 +127,25 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
       <PullToRefresh ref={listRef} onRefresh={() => loadMore(true)} refreshing={refreshing}
         className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {items.length ? (
-          <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
+          <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-3`}>
             {items.map((p) => (
               <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="cv-card group cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
-                <Img src={p.cover} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
-                <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
-                <div className="absolute inset-x-0 bottom-0 p-2">
-                  <div className="text-[12px] font-medium text-white clamp-2 leading-snug tsh">{p.title}</div>
-                  <div className="flex items-center gap-1 mt-1 text-[10px] text-white/75">
-                    <IFireF size={10} className="text-white/75" />{fmt(p.hot)}
-                  </div>
+                className="cv-card group pressable block text-left w-full">
+                <div className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1">
+                  <Img src={p.cover} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
+                  <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/62 to-transparent pointer-events-none" />
+                  <span className="absolute bottom-1.5 right-2 flex items-center gap-1 text-[10.5px] font-semibold text-white/92 tsh tabular-nums">
+                    <IFireF size={10} className="text-primary" />{fmt(p.hot)}
+                  </span>
+                </div>
+                <div className="pt-2 px-0.5">
+                  <div className="cover-title text-[13px] font-semibold text-on clamp-2 leading-snug">{p.title}</div>
                 </div>
               </button>
             ))}
           </div>
         ) : loading ? (
-          <CardGridSkeleton wide={wide} aspect="aspect-[4/5]" gap="gap-2" />
+          <CardGridSkeleton wide={wide} aspect="aspect-[4/5]" gap="gap-3" />
         ) : err ? (
           <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore(true)} />
         ) : (
@@ -179,7 +181,8 @@ function validPostCounts(raw: Post["counts"]): NonNullable<Post["counts"]> {
 /* ================= 吃瓜详情（网页式浏览） ================= */
 export function PostDetail({ id, onBack, active = true }: { id: number; onBack: () => void; active?: boolean }) {
   const { toast, changeInteraction, setLoginOpen, searchFor } = useStoreActions();
-  const { strictSecurity, lineVersion } = useUiState();
+  const { strictSecurity } = useSecurityUi();
+  const { lineVersion } = useDataVersion();
   const user = useSessionUser();
   const { isLiked, isFav } = useInteractions();
   const { muted, setMuted, volume } = usePlaybackPrefs();

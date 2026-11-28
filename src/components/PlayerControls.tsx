@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { fmtTime } from "../api";
 import { useSeekInput } from "../useSeekInput";
-import { useProgress, useScrub, type PlaybackProgressBus, type ScrubBus } from "../playbackProgress";
+import { useProgressClock, useScrub, type PlaybackProgressBus, type ScrubBus } from "../playbackProgress";
 import { ICheck, ICompress, IExpand, ILockF, INext, IPauseF, IPip, IPlayF, ITheater, IVol, IVolMute } from "../icons";
 
 type Props = {
@@ -40,23 +40,62 @@ type Props = {
 
 const clock = (s: number) => fmtTime(Math.max(0, s || 0)).padStart(5, "0");
 
-export default function PlayerControls({
-  paused, time, duration, buffered, progressBus, scrubBus, rate, muted, volume, orientationLabel, theater = false, fullscreen = false,
-  visible = true, seekEnabled = true, seekKey, prevDisabled = false, prevTitle = "上一个", nextDisabled = false, nextTitle = "下一个",
-  onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onPrev, onNext,
-}: Props) {
-  const [speedOpen, setSpeedOpen] = useState(false);
+/* 独立时钟文本：仅在控制条可见时按整秒刷新，隐藏时 0 React 提交 */
+const DesktopTimecode = memo(function DesktopTimecode({
+  time, duration, progressBus, scrubBus, visible,
+}: {
+  time?: number; duration: number; progressBus?: PlaybackProgressBus; scrubBus?: ScrubBus; visible: boolean;
+}) {
+  const sec = useProgressClock(progressBus, visible);
+  const scrubSnap = useScrub(scrubBus);
+  const shown = scrubSnap?.target ?? time ?? sec;
+  return (
+    <span className="player-timecode">
+      <span>{clock(shown)}</span>
+      <span className="player-time-separator">/</span>
+      {clock(duration)}
+    </span>
+  );
+});
+
+/* 独立进度条：播放态由 DOM ref 直接驱动 scaleX 与 thumb，0 React 重渲染；拖动/键盘仍走 useSeekInput 保证精确交互 */
+const DesktopSeekBar = memo(function DesktopSeekBar({
+  time, duration, buffered, progressBus, scrubBus, visible, seekEnabled, seekKey, onSeek, onSeekInteraction,
+}: {
+  time?: number;
+  duration: number;
+  buffered?: number;
+  progressBus?: PlaybackProgressBus;
+  scrubBus?: ScrubBus;
+  visible: boolean;
+  seekEnabled: boolean;
+  seekKey?: string;
+  onSeek: (t: number, source?: string) => void;
+  onSeekInteraction?: (phase: string, input: string, target: number, pointerTarget?: number) => void;
+}) {
   const [hover, setHover] = useState<{ pct: number; time: number } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const boxRef = useRef<HTMLDivElement>(null);
-  const busSnap = useProgress(progressBus);
   const scrubSnap = useScrub(scrubBus);
-  const effectiveTime = scrubSnap?.target ?? time ?? busSnap?.time ?? 0;
-  const effectiveBuffered = buffered ?? busSnap?.buffered ?? 0;
-  const seek = useSeekInput({ time: effectiveTime, duration, enabled: seekEnabled, resetKey: seekKey, onInteraction: onSeekInteraction,
-    onSeek: (target, input) => onSeek(target, `desktop_${input}`) });
+  const bufferRef = useRef<HTMLSpanElement>(null);
+  const playedRef = useRef<HTMLSpanElement>(null);
+  const thumbRef = useRef<HTMLSpanElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const initialTime = scrubSnap?.target ?? time ?? progressBus?.get().time ?? 0;
+  const seek = useSeekInput({
+    time: initialTime,
+    duration,
+    enabled: seekEnabled,
+    resetKey: seekKey,
+    onInteraction: onSeekInteraction,
+    onSeek: (target, input) => onSeek(target, `desktop_${input}`),
+  });
+  const isInteracting = dragging || !!scrubSnap;
+  const isInteractingRef = useRef(isInteracting);
+  isInteractingRef.current = isInteracting;
+
   const pct = duration ? Math.max(0, Math.min(100, (seek.time / duration) * 100)) : 0;
-  const bufRatio = Math.max(0, Math.min(1, effectiveBuffered));
+  const bufRatio = Math.max(0, Math.min(1, buffered ?? progressBus?.get().buffered ?? 0));
 
   useEffect(() => {
     if (!seekEnabled) {
@@ -66,11 +105,25 @@ export default function PlayerControls({
   }, [seekEnabled]);
 
   useEffect(() => {
-    if (!speedOpen) return;
-    const outside = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setSpeedOpen(false); };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, [speedOpen]);
+    if (!progressBus) return undefined;
+    const applyDom = () => {
+      const snap = progressBus.get();
+      const b = Math.max(0, Math.min(1, snap.buffered));
+      if (bufferRef.current) bufferRef.current.style.transform = `scaleX(${b})`;
+      if (isInteractingRef.current) return;
+      const t = snap.time;
+      const ratio = duration > 0 ? Math.max(0, Math.min(1, t / duration)) : 0;
+      if (playedRef.current) playedRef.current.style.transform = `scaleX(${ratio})`;
+      if (thumbRef.current) thumbRef.current.style.left = `${ratio * 100}%`;
+      if (inputRef.current && document.activeElement !== inputRef.current) {
+        const clamped = duration > 0 ? Math.max(0, Math.min(t, duration)) : 0;
+        inputRef.current.value = String(clamped);
+      }
+    };
+    if (!visible) return undefined;
+    applyDom();
+    return progressBus.subscribe(applyDom);
+  }, [progressBus, duration, visible]);
 
   const updateHover = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!seekEnabled || !duration || duration <= 0) return;
@@ -81,29 +134,71 @@ export default function PlayerControls({
   };
 
   return (
+    <div
+      className={`desktop-seek ${seekEnabled ? "is-seekable" : ""} ${isInteracting ? "is-dragging" : ""}`}
+      onPointerMove={updateHover}
+      onPointerDown={(e) => { if (seekEnabled && e.button === 0) setDragging(true); updateHover(e); }}
+      onPointerUp={() => setDragging(false)}
+      onPointerCancel={() => { setDragging(false); setHover(null); }}
+      onPointerLeave={() => { setDragging(false); setHover(null); }}>
+      <div className="desktop-seek-track">
+        <span ref={bufferRef} className="desktop-seek-buffer" style={{ transform: `scaleX(${bufRatio})` }} />
+        <span ref={playedRef} className="desktop-seek-played" style={{ transform: `scaleX(${pct / 100})` }} />
+      </div>
+      <span ref={thumbRef} className="desktop-seek-thumb" style={{ left: `${pct}%` }} />
+      {hover && visible && (
+        <span
+          className="desktop-seek-tooltip"
+          style={{ left: `clamp(24px, ${hover.pct * 100}%, calc(100% - 24px))` }}>
+          {clock(hover.time)}
+        </span>
+      )}
+      <input
+        ref={inputRef}
+        aria-label="播放进度"
+        type="range"
+        {...seek.inputProps}
+        onFocus={() => {
+          if (progressBus && inputRef.current && duration > 0) {
+            const t = Math.max(0, Math.min(progressBus.get().time, duration));
+            inputRef.current.value = String(t);
+          }
+        }}
+      />
+    </div>
+  );
+});
+
+const PlayerControls = memo(function PlayerControls({
+  paused, time, duration, buffered, progressBus, scrubBus, rate, muted, volume, orientationLabel, theater = false, fullscreen = false,
+  visible = true, seekEnabled = true, seekKey, prevDisabled = false, prevTitle = "上一个", nextDisabled = false, nextTitle = "下一个",
+  onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onPrev, onNext,
+}: Props) {
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!speedOpen) return;
+    const outside = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setSpeedOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [speedOpen]);
+
+  return (
     <div ref={boxRef} className={`desktop-controls ${fullscreen ? "is-fullscreen" : ""} ${visible ? "" : "is-hidden"}`}
       onPointerDown={(e) => e.stopPropagation()}>
-      <div
-        className={`desktop-seek ${seekEnabled ? "is-seekable" : ""} ${dragging || !!scrubSnap ? "is-dragging" : ""}`}
-        onPointerMove={updateHover}
-        onPointerDown={(e) => { if (seekEnabled && e.button === 0) setDragging(true); updateHover(e); }}
-        onPointerUp={() => setDragging(false)}
-        onPointerCancel={() => { setDragging(false); setHover(null); }}
-        onPointerLeave={() => { setDragging(false); setHover(null); }}>
-        <div className="desktop-seek-track">
-          <span className="desktop-seek-buffer" style={{ transform: `scaleX(${bufRatio})` }} />
-          <span className="desktop-seek-played" style={{ transform: `scaleX(${pct / 100})` }} />
-        </div>
-        <span className="desktop-seek-thumb" style={{ left: `${pct}%` }} />
-        {hover && visible && (
-          <span
-            className="desktop-seek-tooltip"
-            style={{ left: `clamp(24px, ${hover.pct * 100}%, calc(100% - 24px))` }}>
-            {clock(hover.time)}
-          </span>
-        )}
-        <input aria-label="播放进度" type="range" {...seek.inputProps} />
-      </div>
+      <DesktopSeekBar
+        time={time}
+        duration={duration}
+        buffered={buffered}
+        progressBus={progressBus}
+        scrubBus={scrubBus}
+        visible={visible}
+        seekEnabled={seekEnabled}
+        seekKey={seekKey}
+        onSeek={onSeek}
+        onSeekInteraction={onSeekInteraction}
+      />
 
       <div className="desktop-control-row">
         <button className="player-control primary-play" aria-label={paused ? "播放" : "暂停"} data-tooltip={paused ? "播放 Space" : "暂停 Space"} onClick={onToggle}>
@@ -119,7 +214,7 @@ export default function PlayerControls({
             <INext size={18} strokeWidth={1.7} />
           </button>
         )}
-        <span className="player-timecode"><span>{clock(seek.time)}</span><span className="player-time-separator">/</span>{clock(duration)}</span>
+        <DesktopTimecode time={time} duration={duration} progressBus={progressBus} scrubBus={scrubBus} visible={visible} />
         <div className="player-control-spacer" />
         {!!orientationLabel && <span className="player-resolution">{orientationLabel}</span>}
         <div className="player-speed-slot">
@@ -160,4 +255,6 @@ export default function PlayerControls({
       </div>
     </div>
   );
-}
+});
+
+export default PlayerControls;

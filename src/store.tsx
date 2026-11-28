@@ -182,12 +182,24 @@ function readThemePref(): ThemePref {
   }
 }
 
+function readPowerSaver(): boolean {
+  try {
+    return localStorage.getItem("hghub_power_saver") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle("theme-light", theme === "light");
   document.documentElement.style.colorScheme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--p-canvas").trim();
-  if (meta) meta.setAttribute("content", bg || (theme === "light" ? "#f9f9f9" : "#1a1a1a"));
+  if (meta) meta.setAttribute("content", bg || (theme === "light" ? "#f4f4f7" : "#0b0b0e"));
+}
+
+function applyPowerSaver(on: boolean) {
+  document.documentElement.classList.toggle("power-saver", on);
 }
 
 type PlaybackPrefs = PlaybackPrefsState & {
@@ -208,6 +220,7 @@ export type NavState = {
 export type ThemeState = {
   theme: Theme;
   themePref: ThemePref;
+  powerSaver: boolean;
 };
 
 export type InteractionsState = {
@@ -219,25 +232,37 @@ export type InteractionsState = {
   isFav: (id: number, post?: boolean) => boolean;
 };
 
-export type UiState = {
+export type ModalUiState = {
   loginOpen: boolean;
   linePickerOpen: boolean;
   shortcutsOpen: boolean;
+};
+
+export type ViewportModeState = {
   theater: boolean;
   fs: boolean;
+};
+
+export type SecurityUiState = {
   strictSecurity: boolean;
   strictSecurityReady: boolean;
   securityPending: boolean;
   cliRelaxed: boolean;
+};
+
+export type DataVersionState = {
   lineVersion: number;
   homeRefresh: number;
   searchIntent: { q: string; seq: number } | null;
 };
 
+export type UiState = ModalUiState & ViewportModeState & SecurityUiState & DataVersionState;
+
 export type StoreActions = {
   platform: Platform;
   setTheme: (t: Theme) => void;
   setThemePref: (t: ThemePref) => void;
+  setPowerSaver: (on: boolean) => void;
   setTab: (t: Tab) => void;
   travel: (offset: -1 | 1) => void;
   push: (p: PageInput) => void;
@@ -281,7 +306,10 @@ const ActionsCtx = createContext<StoreActions>(null as unknown as StoreActions);
 const NavCtx = createContext<NavState>(null as unknown as NavState);
 const ThemeCtx = createContext<ThemeState>(null as unknown as ThemeState);
 const SessionCtx = createContext<User | null>(null);
-const UiCtx = createContext<UiState>(null as unknown as UiState);
+const ModalUiCtx = createContext<ModalUiState>(null as unknown as ModalUiState);
+const ViewportModeCtx = createContext<ViewportModeState>(null as unknown as ViewportModeState);
+const SecurityUiCtx = createContext<SecurityUiState>(null as unknown as SecurityUiState);
+const DataVersionCtx = createContext<DataVersionState>(null as unknown as DataVersionState);
 const InteractionsCtx = createContext<InteractionsState>(null as unknown as InteractionsState);
 const HistoryCtx = createContext<WatchProgress[]>([]);
 const SearchHistCtx = createContext<string[]>([]);
@@ -292,12 +320,27 @@ export const useStoreActions = () => useContext(ActionsCtx);
 export const useNavState = () => useContext(NavCtx);
 export const useThemeState = () => useContext(ThemeCtx);
 export const useSessionUser = () => useContext(SessionCtx);
-export const useUiState = () => useContext(UiCtx);
+export const useModalUi = () => useContext(ModalUiCtx);
+export const useViewportMode = () => useContext(ViewportModeCtx);
+export const useSecurityUi = () => useContext(SecurityUiCtx);
+export const useDataVersion = () => useContext(DataVersionCtx);
 export const useInteractions = () => useContext(InteractionsCtx);
 export const useHistoryState = () => useContext(HistoryCtx);
 export const useSearchHistory = () => useContext(SearchHistCtx);
 export const useToasts = () => useContext(ToastCtx);
 export const usePlaybackPrefs = () => useContext(PlaybackPrefsCtx);
+
+/** 兼容聚合视图：需要细粒度隔离的组件请直接订阅 useModalUi / useViewportMode / useSecurityUi / useDataVersion */
+export function useUiState(): UiState {
+  const modal = useModalUi();
+  const viewport = useViewportMode();
+  const security = useSecurityUi();
+  const data = useDataVersion();
+  return useMemo(
+    () => ({ ...modal, ...viewport, ...security, ...data }),
+    [modal, viewport, security, data],
+  );
+}
 
 /** 兼容入口：需要完整订阅的组件可继续使用 `useStore()`，高频路径推荐按切片 hook 订阅 */
 export function useStore(): Store {
@@ -341,17 +384,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pTimerRef = useRef<number | undefined>(undefined);
   const [themePref, setThemePref] = useState<ThemePref>(readThemePref);
   const [sysTheme, setSysTheme] = useState<Theme>(systemTheme);
+  const [powerSaver, setPowerSaverState] = useState<boolean>(readPowerSaver);
   const theme: Theme = themePref === "system" ? sysTheme : themePref;
   const setTheme = useCallback((t: Theme) => setThemePref(t), []);
+  const setPowerSaver = useCallback((on: boolean) => {
+    setPowerSaverState(on);
+    applyPowerSaver(on);
+    try { localStorage.setItem("hghub_power_saver", on ? "1" : "0"); } catch { /* ignore */ }
+  }, []);
   type Destination = { tab: Tab; stack: Page[] };
   const [navigation, setNavigation] = useState<{ entries: Destination[]; index: number }>({
     entries: [{ tab: "home", stack: [] }], index: 0,
   });
+  const navIndexRef = useRef(navigation.index);
+  navIndexRef.current = navigation.index;
   const { tab, stack } = navigation.entries[navigation.index];
   const [session, setSession] = useState<{ user: User; key: string } | null>(null);
   const sessionChange = useRef(0);
   const user = session?.user ?? null;
   const accountKey = session?.key;
+  const accountKeyRef = useRef(accountKey);
+  accountKeyRef.current = accountKey;
   const interactions = accountKey ? (p.accounts[accountKey] ?? EMPTY_INTERACTIONS) : p;
   const [loginOpen, setLoginOpen] = useState(false);
   const [linePickerOpen, setLinePickerOpen] = useState(false);
@@ -362,6 +415,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [strictSecurity, setStrictSecurityState] = useState<boolean>(isStrictSecurity);
   const [cliRelaxed, setCliRelaxed] = useState(false);
   const [strictSecurityReady, setStrictSecurityReady] = useState(false);
+  const strictSecurityReadyRef = useRef(strictSecurityReady);
+  strictSecurityReadyRef.current = strictSecurityReady;
   const [securityPending, setSecurityPending] = useState(false);
   const [lineVersion, setLineVersion] = useState(0);
   const [homeRefresh, setHomeRefresh] = useState(0);
@@ -388,6 +443,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem("hghub_theme_pref", themePref);
     } catch { /* ignore */ }
   }, [theme, themePref]);
+
+  useEffect(() => {
+    applyPowerSaver(powerSaver);
+  }, [powerSaver]);
 
   const writeAppPersist = useCallback(() => {
     try {
@@ -523,7 +582,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [applyUser]);
 
   const setStrictSecurity = useCallback(async (on: boolean) => {
-    if (!strictSecurityReady) throw new Error("安全设置尚未读取，请重新启动应用");
+    if (!strictSecurityReadyRef.current) throw new Error("安全设置尚未读取，请重新启动应用");
     setSecurityPending(true);
     try {
       const saved = await api.securitySet(on);
@@ -532,7 +591,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setSecurityPending(false);
     }
-  }, [strictSecurityReady]);
+  }, []);
 
   const toast = useCallback((msg: string, icon?: Toast["icon"]) => {
     const id = ++toastSeq.current;
@@ -592,34 +651,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, [setFs, syncTheaterForDest]);
   const pop = useCallback(() => {
-    if (envPlatform === "macos" && navigation.index > 0) travel(-1);
+    if (envPlatform === "macos" && navIndexRef.current > 0) travel(-1);
     else navigate(current => ({ ...current, stack: current.stack.slice(0, -1) }));
-  }, [navigate, navigation.index, travel]);
+  }, [navigate, travel]);
 
   const pendingInteractions = useRef(new Set<string>());
-  const revision = sessionChange.current;
   const handleSessionError = useCallback((error: unknown) => {
-    if (!accountKey || sessionChange.current !== revision || !(error instanceof Error)) return;
+    if (!accountKeyRef.current || !(error instanceof Error)) return;
     if (error.message === SESSION_EXPIRED_MESSAGE || error.message === "请先登录") {
       setUser(null);
       setLoginOpen(true);
     }
-  }, [accountKey, revision, setUser]);
+  }, [setUser]);
   useLayoutEffect(() => observeSessionExpiry(handleSessionError), [handleSessionError]);
 
   const changeInteraction = useCallback(async (field: InteractionField, id: number, options: InteractionOptions = {}) => {
-    if (sessionChange.current !== revision) return null;
+    const reqAccountKey = accountKeyRef.current;
+    const reqRevision = sessionChange.current;
     const list = options.post && field === "likes" ? "postLikes"
       : options.post && field === "favs" ? "postFavs" : field;
-    const key = JSON.stringify([accountKey, list, id]);
+    const key = JSON.stringify([reqAccountKey, list, id]);
     if (pendingInteractions.current.has(key)) return null;
 
-    const getInteractions = (state: Persist) => accountKey ? state.accounts[accountKey] : state;
+    const getInteractions = (state: Persist) => reqAccountKey ? state.accounts[reqAccountKey] : state;
     const update = (change: (previous: Interactions) => Partial<Interactions>) => {
       setP((state) => {
         const patch = change(getInteractions(state));
-        return accountKey
-          ? { ...state, accounts: { ...state.accounts, [accountKey]: { ...state.accounts[accountKey], ...patch } } }
+        return reqAccountKey
+          ? { ...state, accounts: { ...state.accounts, [reqAccountKey]: { ...state.accounts[reqAccountKey], ...patch } } }
           : { ...state, ...patch };
       });
     };
@@ -629,7 +688,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!had && !on) return null;
 
     const assertCurrentSession = () => {
-      if (sessionChange.current !== revision) throw new Error("登录状态已变化，请重试");
+      if (sessionChange.current !== reqRevision) throw new Error("登录状态已变化，请重试");
     };
     const commit = (ep?: number) => {
       // A successful response belongs to the account that sent it, even after logout.
@@ -659,7 +718,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     pendingInteractions.current.add(key);
     try {
-      if (!accountKey) {
+      if (!reqAccountKey) {
         commit(on && !options.post ? options.ep : undefined);
       } else if (field === "likes" && !options.post) {
         const fallbackEp = options.ep ?? 1;
@@ -676,15 +735,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         else await api.collect(id, on);
         commit();
       }
-      return sessionChange.current === revision ? on : null;
+      return sessionChange.current === reqRevision ? on : null;
     } catch (error) {
-      if (sessionChange.current !== revision) return null;
+      if (sessionChange.current !== reqRevision) return null;
       handleSessionError(error);
       throw error;
     } finally {
       pendingInteractions.current.delete(key);
     }
-  }, [accountKey, revision, setP, handleSessionError]);
+  }, [setP, handleSessionError]);
   const removeHistory = useCallback((id: number) => {
     setP((s) => ({ ...s, history: s.history.filter((x) => x.id !== id) }));
   }, [setP]);
@@ -719,12 +778,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), [setP]);
 
   const logout = useCallback(async () => {
-    if (sessionChange.current !== revision) return;
     const logoutRequest = api.logout();
     setUser(null);
     toast("已退出登录", "info");
     await logoutRequest.catch(() => {});
-  }, [revision, setUser, toast]);
+  }, [setUser, toast]);
 
   const setTheater = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTheaterState((prev) => (typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v));
@@ -763,7 +821,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const actionsValue = useMemo<StoreActions>(() => ({
     platform: envPlatform,
-    setTheme, setThemePref,
+    setTheme, setThemePref, setPowerSaver,
     setTab, travel, push, pop,
     setUser, handleSessionError, prepareLogin,
     setLoginOpen, setLinePickerOpen, setShortcutsOpen, logout,
@@ -774,7 +832,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     addSearch, removeSearchHist, clearSearchHist,
     setStrictSecurity, bumpLineVersion, bumpHomeRefresh, searchFor, toast,
   }), [
-    setTheme, setTab, travel, push, pop,
+    setTheme, setPowerSaver, setTab, travel, push, pop,
     setUser, handleSessionError, prepareLogin, logout,
     changeInteraction, removeHistory, addHistory, clearHistory,
     getWatchProgress, getHistoryIds,
@@ -789,17 +847,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     canGoForward: navigation.index < navigation.entries.length - 1,
   }), [tab, stack, navigation.index, navigation.entries.length]);
 
-  const themeValue = useMemo<ThemeState>(() => ({ theme, themePref }), [theme, themePref]);
+  const themeValue = useMemo<ThemeState>(() => ({ theme, themePref, powerSaver }), [theme, themePref, powerSaver]);
 
-  const uiValue = useMemo<UiState>(() => ({
-    loginOpen, linePickerOpen, shortcutsOpen, theater, fs,
+  const modalUiValue = useMemo<ModalUiState>(() => ({
+    loginOpen, linePickerOpen, shortcutsOpen,
+  }), [loginOpen, linePickerOpen, shortcutsOpen]);
+
+  const viewportModeValue = useMemo<ViewportModeState>(() => ({
+    theater, fs,
+  }), [theater, fs]);
+
+  const securityUiValue = useMemo<SecurityUiState>(() => ({
     strictSecurity, strictSecurityReady, securityPending, cliRelaxed,
+  }), [strictSecurity, strictSecurityReady, securityPending, cliRelaxed]);
+
+  const dataVersionValue = useMemo<DataVersionState>(() => ({
     lineVersion, homeRefresh, searchIntent,
-  }), [
-    loginOpen, linePickerOpen, shortcutsOpen, theater, fs,
-    strictSecurity, strictSecurityReady, securityPending, cliRelaxed,
-    lineVersion, homeRefresh, searchIntent,
-  ]);
+  }), [lineVersion, homeRefresh, searchIntent]);
 
   const interactionsValue = useMemo<InteractionsState>(() => {
     const likeSet = new Set(interactions.likes);
@@ -821,17 +885,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       <NavCtx.Provider value={navValue}>
         <ThemeCtx.Provider value={themeValue}>
           <SessionCtx.Provider value={user}>
-            <UiCtx.Provider value={uiValue}>
-              <InteractionsCtx.Provider value={interactionsValue}>
-                <HistoryCtx.Provider value={p.history}>
-                  <SearchHistCtx.Provider value={p.searchHist}>
-                    <PlaybackPrefsCtx.Provider value={playbackPrefsValue}>
-                      <ToastCtx.Provider value={toasts}>{children}</ToastCtx.Provider>
-                    </PlaybackPrefsCtx.Provider>
-                  </SearchHistCtx.Provider>
-                </HistoryCtx.Provider>
-              </InteractionsCtx.Provider>
-            </UiCtx.Provider>
+            <ModalUiCtx.Provider value={modalUiValue}>
+              <ViewportModeCtx.Provider value={viewportModeValue}>
+                <SecurityUiCtx.Provider value={securityUiValue}>
+                  <DataVersionCtx.Provider value={dataVersionValue}>
+                    <InteractionsCtx.Provider value={interactionsValue}>
+                      <HistoryCtx.Provider value={p.history}>
+                        <SearchHistCtx.Provider value={p.searchHist}>
+                          <PlaybackPrefsCtx.Provider value={playbackPrefsValue}>
+                            <ToastCtx.Provider value={toasts}>{children}</ToastCtx.Provider>
+                          </PlaybackPrefsCtx.Provider>
+                        </SearchHistCtx.Provider>
+                      </HistoryCtx.Provider>
+                    </InteractionsCtx.Provider>
+                  </DataVersionCtx.Provider>
+                </SecurityUiCtx.Provider>
+              </ViewportModeCtx.Provider>
+            </ModalUiCtx.Provider>
           </SessionCtx.Provider>
         </ThemeCtx.Provider>
       </NavCtx.Provider>

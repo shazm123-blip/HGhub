@@ -10,13 +10,17 @@ export function Avatar({ hue = 250, icon, name, size = 40, ring = false, classNa
 }) {
   const inner = (
     <div className="w-full h-full rounded-full flex items-center justify-center overflow-hidden font-semibold"
-      style={{ background: `hsl(${hue} 22% 30%)`, color: `hsl(${hue} 70% 88%)` }}>
+      style={{ background: `hsl(${hue} 24% 24%)`, color: `hsl(${hue} 76% 86%)` }}>
       {icon ?? <span style={{ fontSize: size * 0.42 }} className="leading-none">{(name || "H").replace(/^@/, "")[0].toUpperCase()}</span>}
     </div>
   );
   return (
     <div className={`shrink-0 ${className}`} style={{ width: size, height: size }}>
-      {ring ? <div className="w-full h-full rounded-full p-[2px] bg-primary"><div className="w-full h-full rounded-full bg-bg p-[2px]">{inner}</div></div> : inner}
+      {ring ? (
+        <div className="w-full h-full rounded-full p-[2px] brand-grad glow-neon">
+          <div className="w-full h-full rounded-full bg-s1 p-[2px]">{inner}</div>
+        </div>
+      ) : inner}
     </div>
   );
 }
@@ -378,9 +382,9 @@ export function ToastHost() {
   );
 }
 
-/* ——— 移动端下拉刷新滚动容器（桌面端零额外开销，直接退化为标准滚动容器） ——— */
+/* ——— 移动端下拉刷新滚动容器（DOM Ref 直驱，下拉拖动 0 React 重渲染；桌面端零额外开销） ——— */
 const PTR_THRESHOLD = 58;
-const PTR_MAX = 96;
+const PTR_MAX = 92;
 
 export const PullToRefresh = forwardRef<HTMLDivElement, {
   onRefresh: () => void | Promise<unknown>;
@@ -390,7 +394,9 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
   children: React.ReactNode;
 }>(function PullToRefresh({ onRefresh, refreshing = false, className = "", style, children }, forwardedRef) {
   const innerRef = useRef<HTMLDivElement | null>(null);
-  const [pull, setPull] = useState(0);
+  const indicatorRef = useRef<HTMLDivElement | null>(null);
+  const iconWrapRef = useRef<HTMLSpanElement | null>(null);
+  const labelRef = useRef<HTMLSpanElement | null>(null);
   const [busy, setBusy] = useState(false);
   const pullRef = useRef(0);
   const busyRef = useRef(false);
@@ -403,6 +409,28 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
     if (typeof forwardedRef === "function") forwardedRef(el);
     else if (forwardedRef) forwardedRef.current = el;
   };
+
+  const applyIndicator = (height: number, animate: boolean, isRefreshing: boolean) => {
+    const ind = indicatorRef.current;
+    if (!ind) return;
+    ind.style.transition = animate ? "height .18s cubic-bezier(.32,.72,0,1), opacity .18s ease" : "none";
+    ind.style.height = `${height}px`;
+    ind.style.opacity = height > 4 ? "1" : "0";
+    if (iconWrapRef.current && !isRefreshing) {
+      const deg = Math.min(180, (height / PTR_THRESHOLD) * 180);
+      iconWrapRef.current.style.transform = `rotate(${deg}deg)`;
+    }
+    if (labelRef.current && !isRefreshing) {
+      labelRef.current.textContent = height >= PTR_THRESHOLD ? "松开立即刷新" : "下拉刷新";
+    }
+  };
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const activeRefresh = busy || refreshing;
+    applyIndicator(activeRefresh ? 40 : 0, true, activeRefresh);
+    if (labelRef.current && activeRefresh) labelRef.current.textContent = "正在刷新…";
+  }, [busy, refreshing]);
 
   useEffect(() => {
     if (!isMobile) return undefined;
@@ -436,7 +464,7 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
         if (pulling) {
           pulling = false;
           pullRef.current = 0;
-          setPull(0);
+          applyIndicator(0, true, false);
         }
         return;
       }
@@ -451,13 +479,15 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
       }
       if (dy <= 0) {
         pullRef.current = 0;
-        setPull(0);
+        applyIndicator(0, false, false);
         return;
       }
       e.preventDefault();
       const damped = Math.min(PTR_MAX, Math.round(dy * 0.46));
-      pullRef.current = damped;
-      setPull(damped);
+      if (damped !== pullRef.current) {
+        pullRef.current = damped;
+        applyIndicator(damped, false, false);
+      }
     };
 
     const onTouchEnd = () => {
@@ -468,15 +498,15 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
       pullRef.current = 0;
       if (dist >= PTR_THRESHOLD && !busyRef.current) {
         setBusy(true);
-        setPull(42);
+        applyIndicator(40, true, true);
+        if (labelRef.current) labelRef.current.textContent = "正在刷新…";
         Promise.resolve(onRefreshRef.current())
           .catch(() => {})
           .finally(() => {
             setBusy(false);
-            setPull(0);
           });
       } else {
-        setPull(0);
+        applyIndicator(0, true, false);
       }
     };
 
@@ -493,22 +523,19 @@ export const PullToRefresh = forwardRef<HTMLDivElement, {
   }, []);
 
   const activeRefresh = busy || refreshing;
-  const indicatorH = activeRefresh ? Math.max(pull, 38) : pull;
-  const ready = pull >= PTR_THRESHOLD;
 
   return (
     <div ref={setRefs} className={className} style={style}>
-      {isMobile && indicatorH > 0 && (
+      {isMobile && (
         <div
+          ref={indicatorRef}
           aria-live="polite"
-          className="flex items-center justify-center gap-1.5 overflow-hidden text-[11.5px] text-mut select-none transition-[height] duration-150"
-          style={{ height: indicatorH }}>
-          <IRefresh
-            size={14}
-            className={activeRefresh ? "animate-spin text-primary" : "transition-transform duration-150 text-mut"}
-            style={!activeRefresh ? { transform: `rotate(${Math.min(180, (pull / PTR_THRESHOLD) * 180)}deg)` } : undefined}
-          />
-          <span>{activeRefresh ? "正在刷新…" : ready ? "松开立即刷新" : "下拉刷新"}</span>
+          className="flex items-center justify-center gap-1.5 overflow-hidden text-[11.5px] text-mut select-none"
+          style={{ height: activeRefresh ? 40 : 0, opacity: activeRefresh ? 1 : 0 }}>
+          <span ref={iconWrapRef} className="inline-flex">
+            <IRefresh size={14} className={activeRefresh ? "animate-spin text-primary" : "text-mut"} />
+          </span>
+          <span ref={labelRef}>{activeRefresh ? "正在刷新…" : "下拉刷新"}</span>
         </div>
       )}
       {children}
@@ -557,14 +584,18 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-/* ——— 骨架屏 ——— */
-export function CardGridSkeleton({ wide = false, count = 8, aspect = "aspect-[100/132]", gap = "gap-1.5" }: {
+/* ——— 骨架屏（对齐画廊式海报卡结构） ——— */
+export function CardGridSkeleton({ wide = false, count = 8, aspect = "aspect-[3/4]", gap = "gap-3" }: {
   wide?: boolean; count?: number; aspect?: string; gap?: string;
 }) {
   return (
     <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} ${gap}`} aria-busy="true">
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={`relative w-full ${aspect} rounded-(--r-sm) overflow-hidden shimmer`} />
+        <div key={i} className="w-full">
+          <div className={`relative w-full ${aspect} rounded-(--r-sm) overflow-hidden shimmer`} />
+          <div className="mt-2 h-3.5 w-4/5 rounded shimmer" />
+          <div className="mt-1.5 h-2.5 w-1/2 rounded shimmer" />
+        </div>
       ))}
     </div>
   );

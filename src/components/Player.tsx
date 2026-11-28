@@ -1,15 +1,90 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type Hls from "hls.js";
 import { fmtTime, friendlyError, isLocalMedia, isMobile, mediaUrl, platform } from "../api";
 import { getLoadedHls, loadHls, type HlsCtor } from "../hlsLoader";
 import { pushBackHandler } from "../back";
 import { usePlaybackPrefs, useStoreActions } from "../store";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
+import { createProgressBus, useProgressClock, type PlaybackProgressBus } from "../playbackProgress";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 import { useSeekInput } from "../useSeekInput";
 import { computeScrubTarget, formatScrubDelta } from "../scrubGesture";
 import PlaybackLock from "./PlaybackLock";
 import { ICompress, IExpand, ILockF, IPauseF, IPlayF, IVol, IVolMute } from "../icons";
+
+/* 独立进度控制条：隔离 timeupdate，避免整棵 Player 组件树每秒重渲染 4 次 */
+const LegacyPlayerSeekBar = memo(function LegacyPlayerSeekBar({
+  progressBus, scrubTarget, duration, enabled, resetKey, visible, onInteraction, onSeek,
+}: {
+  progressBus: PlaybackProgressBus;
+  scrubTarget: number | null;
+  duration: number;
+  enabled: boolean;
+  resetKey: string;
+  visible: boolean;
+  onInteraction: (phase: string, input: string, target: number, pointerTarget?: number) => void;
+  onSeek: (target: number, input: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const draggingRef = useRef(false);
+  const seek = useSeekInput({
+    time: scrubTarget ?? progressBus.get().time,
+    duration,
+    enabled,
+    resetKey,
+    onInteraction: (phase, input, target, pointerTarget) => {
+      if (phase === "down") draggingRef.current = true;
+      else if (phase === "up" || phase === "cancel") draggingRef.current = false;
+      onInteraction(phase, input, target, pointerTarget);
+    },
+    onSeek,
+  });
+
+  const shown = scrubTarget ?? seek.time;
+  const pct = duration > 0 ? Math.max(0, Math.min(100, (shown / duration) * 100)) : 0;
+
+  useEffect(() => {
+    const sync = () => {
+      if (draggingRef.current || scrubTarget !== null) return;
+      const el = inputRef.current;
+      if (!el) return;
+      const t = progressBus.get().time;
+      const p = duration > 0 ? Math.max(0, Math.min(100, (t / duration) * 100)) : 0;
+      el.style.setProperty("--fill", `${p}%`);
+      if (document.activeElement !== el) {
+        el.value = String(duration > 0 ? Math.max(0, Math.min(t, duration)) : 0);
+      }
+    };
+    if (!visible) return undefined;
+    sync();
+    return progressBus.subscribe(sync);
+  }, [progressBus, duration, visible, scrubTarget]);
+
+  return (
+    <input
+      ref={inputRef}
+      aria-label="播放进度"
+      type="range"
+      {...seek.inputProps}
+      onFocus={() => {
+        if (inputRef.current && duration > 0) {
+          inputRef.current.value = String(Math.max(0, Math.min(progressBus.get().time, duration)));
+        }
+      }}
+      className="hg-range w-full"
+      style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties}
+    />
+  );
+});
+
+const LegacyPlayerClock = memo(function LegacyPlayerClock({
+  progressBus, scrubTarget, duration, visible,
+}: {
+  progressBus: PlaybackProgressBus; scrubTarget: number | null; duration: number; visible: boolean;
+}) {
+  const sec = useProgressClock(progressBus, visible);
+  return <span className="text-[11px] tabular-nums text-white/85">{fmtTime(scrubTarget ?? sec)} / {fmtTime(duration)}</span>;
+});
 
 type Props = {
   src: string;              // 原始媒体地址
@@ -54,7 +129,7 @@ export default function Player({
   });
   const { setLinePickerOpen } = useStoreActions();
   const { playbackRate: rate, setPlaybackRate: setRate } = usePlaybackPrefs();
-  const [time, setTime] = useState(0);
+  const progressBus = useMemo(() => createProgressBus(), []);
   const [duration, setDuration] = useState(0);
   const [full, setFull] = useState(false);
   const [cssFull, setCssFull] = useState(false);
@@ -94,7 +169,7 @@ export default function Player({
     }
   }, [active, controlsLocked]);
 
-  const applySeek = (target: number, source: string) => {
+  const applySeek = useCallback((target: number, source: string) => {
     const video = videoRef.current;
     if (!video || !activity.isActive()) return;
     requestSeek(target, source);
@@ -105,13 +180,18 @@ export default function Player({
     video.currentTime = target;
     trace("seek.assigned", { target, source });
     lastTimeRef.current = target;
-    setTime(target);
-  };
+    progressBus.update({ time: target });
+  }, [activity, requestSeek, trace, progressBus]);
 
-  const seek = useSeekInput({ time: scrub ? scrub.target : time, duration, enabled: active && !controlsLocked, resetKey: src,
-    onInteraction: (phase, input, target, pointerTarget) => trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
-    onSeek: (target, input) => applySeek(target, `legacy_${input}`),
-  });
+  const onSeekInteraction = useCallback(
+    (phase: string, input: string, target: number, pointerTarget?: number) =>
+      trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
+    [trace],
+  );
+  const onSeekCommit = useCallback(
+    (target: number, input: string) => applySeek(target, `legacy_${input}`),
+    [applySeek],
+  );
 
   useEffect(() => {
     const video = videoRef.current;
@@ -122,6 +202,7 @@ export default function Player({
     const mobileBuffer = isMobile;
     recoverCountRef.current = 0;
     lastTimeRef.current = -1;
+    progressBus.reset();
     setErrMsg("");
     let disposed = false;
 
@@ -274,7 +355,7 @@ export default function Player({
       id: e.pointerId,
       x: e.clientX,
       y: e.clientY,
-      base: videoRef.current?.currentTime ?? time,
+      base: videoRef.current?.currentTime ?? progressBus.get().time,
       width,
       playing: videoRef.current?.paused === false,
       scrubbing: false,
@@ -328,8 +409,8 @@ export default function Player({
     }
   };
 
-  const touchCtxRef = useRef({ active, controlsLocked, time, duration, showControlsTemporarily, applySeek, activity });
-  touchCtxRef.current = { active, controlsLocked, time, duration, showControlsTemporarily, applySeek, activity };
+  const touchCtxRef = useRef({ active, controlsLocked, duration, showControlsTemporarily, applySeek, activity, progressBus });
+  touchCtxRef.current = { active, controlsLocked, duration, showControlsTemporarily, applySeek, activity, progressBus };
 
   useEffect(() => {
     const el = videoRef.current;
@@ -348,7 +429,7 @@ export default function Player({
         x: t0.clientX,
         y: t0.clientY,
         t: Date.now(),
-        base: el.currentTime || ctx.time,
+        base: el.currentTime || ctx.progressBus.get().time,
         width,
         playing: el.paused === false,
         mode: "idle",
@@ -440,8 +521,7 @@ export default function Player({
     else el.requestFullscreen().catch(() => { setCssFull((v) => !v); });
   };
 
-  const shownTime = scrub ? scrub.target : seek.time;
-  const pct = duration > 0 ? (shownTime / duration) * 100 : 0;
+  const controlsVisible = !playing || controlsShown;
 
   return (
     <div ref={wrapRef}
@@ -474,7 +554,7 @@ export default function Player({
           const t = (e.target as HTMLVideoElement).currentTime;
           if (lastTimeRef.current < 0 || Math.abs(t - lastTimeRef.current) >= 0.25) {
             lastTimeRef.current = t;
-            setTime(t);
+            progressBus.update({ time: t });
           }
         }}
         onLoadedMetadata={(e) => {
@@ -482,7 +562,9 @@ export default function Player({
           v.volume = volume;
           v.muted = muted;
           v.playbackRate = rate;
-          setDuration(v.duration || 0);
+          const d = v.duration || 0;
+          setDuration(d);
+          progressBus.update({ duration: d });
         }}
         onEnded={() => { if (activity.isActive()) onEnded?.(); }}
       />
@@ -551,9 +633,17 @@ export default function Player({
             paddingLeft: "max(var(--sal, 0px), 12px)",
             paddingRight: "max(var(--sar, 0px), 12px)",
           } : undefined}
-          className={`absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${!playing || controlsShown ? "opacity-100" : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"}`}>
-          <input aria-label="播放进度" type="range" {...seek.inputProps}
-            className="hg-range w-full" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
+          className={`absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent transition-opacity ${controlsVisible ? "opacity-100" : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"}`}>
+          <LegacyPlayerSeekBar
+            progressBus={progressBus}
+            scrubTarget={scrub ? scrub.target : null}
+            duration={duration}
+            enabled={active && !controlsLocked}
+            resetKey={src}
+            visible={controlsVisible || !isMobile}
+            onInteraction={onSeekInteraction}
+            onSeek={onSeekCommit}
+          />
           <div className="flex items-center gap-3 mt-1 text-white">
             <button onClick={toggle} aria-label={playing ? "暂停" : "播放"} className="pressable">
               {playing ? <IPauseF size={16} /> : <IPlayF size={16} />}
@@ -561,7 +651,7 @@ export default function Player({
             <button onClick={() => onToggleMute?.()} aria-label={muted ? "取消静音" : "静音"} className="pressable">
               {muted ? <IVolMute size={16} /> : <IVol size={16} />}
             </button>
-            <span className="text-[11px] tabular-nums text-white/85">{fmtTime(seek.time)} / {fmtTime(duration)}</span>
+            <LegacyPlayerClock progressBus={progressBus} scrubTarget={scrub ? scrub.target : null} duration={duration} visible={controlsVisible || !isMobile} />
             <div className="flex-1" />
             <button onClick={() => setControlsLocked(true)} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false} className="pressable">
               <ILockF size={16} />
