@@ -214,11 +214,11 @@ const KEY_CACHE_MAX: usize = 64;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 const KEY_CACHE_MAX_BYTES: usize = 1 * 1024 * 1024;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_MAX: usize = 12;
+const SEG_CACHE_MAX: usize = 6;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_TOTAL_BYTES: usize = 20 * 1024 * 1024;
+const SEG_CACHE_TOTAL_BYTES: usize = 10 * 1024 * 1024;
 #[cfg(any(target_os = "ios", target_os = "android"))]
-const SEG_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const SEG_CACHE_MAX_BYTES: usize = 3 * 1024 * 1024;
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 const IMG_CACHE_MAX: usize = 240;

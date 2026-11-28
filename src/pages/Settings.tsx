@@ -103,7 +103,7 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               <span className="settings-icon shrink-0 w-8 h-8 rounded-lg icon-tone-emerald flex items-center justify-center"><IBoltF size={16} /></span>
               <div className="flex-1 min-w-0">
                 <div className="text-[13.5px] text-on">极致省电模式</div>
-                <div className="text-[11.5px] text-mut">关闭静态毛玻璃与装饰微动效，进一步延长移动端续航</div>
+                <div className="text-[11.5px] text-mut">停用毛玻璃、动效与非当前剧后台预热，收紧缓冲以延长续航</div>
               </div>
               <Toggle
                 on={powerSaver}

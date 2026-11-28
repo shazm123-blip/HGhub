@@ -1,6 +1,6 @@
 import IosNavigation from "../components/IosNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, fmt, isIos, isMacos, isMobile } from "../api";
+import { api, fmt, isIos, isMacos, isMobile, prefetchPlayInfo } from "../api";
 import type { RankItem, VideoCard } from "../types";
 import { useDataVersion, useSearchHistory, useStoreActions } from "../store";
 import { getVideoOrientation } from "../videoMeta";
@@ -178,6 +178,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
   const submittedRef = useRef(submitted);
   submittedRef.current = submitted;
   const openSearchVideo = useCallback((v: VideoCard) => {
+    prefetchPlayInfo(v.id, 1);
     const list = displayedRef.current;
     push({
       kind: "feed",
@@ -323,7 +324,7 @@ export default function Search({ active, wide }: { active: boolean; wide: boolea
             </div>
             {displayedItems.length ? (
               <>
-                <Masonry videos={displayedItems} wide={wide} onOpen={openSearchVideo} />
+                <Masonry videos={displayedItems} wide={wide} active={active} onOpen={openSearchVideo} />
                 <div ref={sentinelRef} className="h-6" />
                 <div className="flex justify-center py-4">
                   {loading ? <div className="w-6 h-6 spinner" />

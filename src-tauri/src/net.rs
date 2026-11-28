@@ -25,6 +25,7 @@ use crate::network_policy;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use once_cell::sync::Lazy;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -137,7 +138,6 @@ fn client_builder(allow_retry: bool) -> reqwest::ClientBuilder {
         .redirect(reqwest::redirect::Policy::none())
         .referer(false)
         .gzip(true)
-        .brotli(true)
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(
             if cfg!(any(target_os = "ios", target_os = "android")) { 90 } else { 30 },
@@ -155,16 +155,83 @@ fn client_builder(allow_retry: bool) -> reqwest::ClientBuilder {
     }
 }
 
-/// 按**当前**系统代理设置新建一个客户端。
+const CLIENT_TTL: Duration = Duration::from_secs(120);
+
+#[derive(Clone)]
+struct CachedDns {
+    expires: Instant,
+    host: String,
+    addrs: Vec<SocketAddr>,
+}
+
+type DnsCache = HashMap<String, CachedDns>;
+static DNS_CACHE: Lazy<Mutex<DnsCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static SHARED_CLIENTS: Lazy<Mutex<[Option<Arc<reqwest::Client>>; 2]>> =
+    Lazy::new(|| Mutex::new([None, None]));
+static CLIENT_FLIGHTS: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn dns_cache_key(strict: bool, host: &str) -> String {
+    format!("{strict}:{}", host.trim_end_matches('.').to_ascii_lowercase())
+}
+
+fn cached_dns(cache: &DnsCache, key: &str, now: Instant) -> Option<Vec<SocketAddr>> {
+    cache
+        .get(key)
+        .filter(|entry| now < entry.expires)
+        .map(|entry| entry.addrs.clone())
+}
+
+/// 共享 DNS 解析器：优先读取已校验的固定 IP 缓存；若缓存未命中或过期，
+/// 在解析时即时执行 `network_policy::resolve_host`（IPv6 优先 + 严格私网拦截），
+/// 让所有域名安全共用 2 个 `reqwest::Client`（共享单一 rustls 根证书树与连接池），
+/// 避免每域名新建 Client 造成的数十 MB 堆内存与证书解析开销。
+struct PinnedDnsResolver;
+
+impl Resolve for PinnedDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().trim_end_matches('.').to_ascii_lowercase();
+        let strict = network_policy::strict_security();
+        let key = dns_cache_key(strict, &host);
+        if let Ok(cache) = DNS_CACHE.lock() {
+            if let Some(addrs) = cached_dns(&cache, &key, Instant::now()) {
+                return Box::pin(async move {
+                    let iter: Addrs = Box::new(addrs.into_iter());
+                    Ok(iter)
+                });
+            }
+        }
+        Box::pin(async move {
+            let addrs = network_policy::resolve_host(&host, 0, strict)
+                .await
+                .map_err(|msg| Box::new(std::io::Error::other(msg)) as Box<dyn std::error::Error + Send + Sync>)?;
+            let now = Instant::now();
+            if let Ok(mut cache) = DNS_CACHE.lock() {
+                cache.retain(|_, entry| now < entry.expires);
+                if cache.len() >= 128 {
+                    cache.clear();
+                }
+                cache.insert(
+                    key,
+                    CachedDns {
+                        expires: now + CLIENT_TTL,
+                        host,
+                        addrs: addrs.clone(),
+                    },
+                );
+            }
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+/// 按**当前**系统代理设置新建一个共享客户端（含自定义安全 DNS 解析器）。
 ///
 /// 注意：reqwest 的 `system-proxy` 只在构建时读一次注册表 / 环境变量。代理软件被关掉后，
-/// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，症状是满屏 `tunnel error: failed to create
-/// underlying connection`（浏览器却是通的，因为它每次都重读系统代理）。所以这里允许重建。
-fn build_client(host: &str, addrs: &[SocketAddr], allow_retry: bool) -> Result<reqwest::Client, String> {
-    let mut builder = client_builder(allow_retry);
-    if !addrs.is_empty() {
-        builder = builder.resolve_to_addrs(host, addrs);
-    }
+/// 旧客户端仍会往 `127.0.0.1:7897` 建隧道，所以代理报错时通过 [`refresh_client`] 重建。
+fn build_shared_client(allow_retry: bool) -> Result<reqwest::Client, String> {
+    let mut builder = client_builder(allow_retry).dns_resolver(Arc::new(PinnedDnsResolver));
     if let Some(p) = proxy_override() {
         // 错误信息不能含原始代理 URL（其中可能有用户名/密码）。
         let proxy = reqwest::Proxy::all(&p).map_err(|_| "HGHUB_PROXY 配置无效（已隐藏原始值）")?;
@@ -175,28 +242,24 @@ fn build_client(host: &str, addrs: &[SocketAddr], allow_retry: bool) -> Result<r
         .map_err(|_| "无法创建 HTTP 客户端".to_string())
 }
 
-const CLIENT_TTL: Duration = Duration::from_secs(120);
-
-#[derive(Clone)]
-struct CachedClient {
-    expires: Instant,
-    host: String,
-    addrs: Vec<SocketAddr>,
-    http: Arc<reqwest::Client>,
+fn shared_client(allow_retry: bool) -> Result<Arc<reqwest::Client>, String> {
+    let slot = usize::from(allow_retry);
+    {
+        let guard = SHARED_CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
+        if let Some(existing) = &guard[slot] {
+            return Ok(existing.clone());
+        }
+    }
+    let built = Arc::new(build_shared_client(allow_retry)?);
+    let mut guard = SHARED_CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
+    if let Some(existing) = &guard[slot] {
+        return Ok(existing.clone());
+    }
+    guard[slot] = Some(built.clone());
+    Ok(built)
 }
 
-type ClientCache = HashMap<String, CachedClient>;
-static CLIENTS: Lazy<Mutex<ClientCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
-static CLIENT_FLIGHTS: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-fn cached_client(cache: &ClientCache, key: &str, now: Instant) -> Option<Arc<reqwest::Client>> {
-    cache
-        .get(key)
-        .filter(|entry| now < entry.expires)
-        .map(|entry| entry.http.clone())
-}
-
+#[cfg(test)]
 fn same_addr_set(a: &[SocketAddr], b: &[SocketAddr]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -219,69 +282,83 @@ fn flight_lock(key: &str) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
         .clone())
 }
 
-/// 缓存按模式、主机和端口隔离；有效期内仅复用已经检查并固定地址的客户端。
-/// 到期后重新检查全部 DNS 答案；若解析地址集合未变化，则在保持检查语义的同时复用热连接池。
+/// 校验目标并在严格模式下预校验/缓存该主机的 DNS 解析结果（按模式与域名隔离，120s TTL），
+/// 然后返回全局复用的共享 `reqwest::Client`（按 `allow_retry` 仅维护 2 个实例）。
 async fn client_for(raw: &str, allow_retry: bool) -> Result<(url::Url, Arc<reqwest::Client>), String> {
     let strict = network_policy::strict_security();
     let target = network_policy::parse_target_with_mode(raw, strict)?;
-    let host = target.host_str().ok_or("目标缺少主机名")?;
-    let port = target.port_or_known_default().ok_or("目标端口无效")?;
-    let key = format!("{strict}:{host}:{port}:{allow_retry}");
-    {
-        let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
-        if let Some(http) = cached_client(&cache, &key, Instant::now()) {
-            return Ok((target, http));
-        }
-    }
-    let flight = flight_lock(&key)?;
-    let _guard = flight.lock().await;
-    let previous = {
-        let cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
-        if let Some(http) = cached_client(&cache, &key, Instant::now()) {
-            return Ok((target, http));
-        }
-        cache.get(&key).cloned()
-    };
+    let _port = target.port_or_known_default().ok_or("目标端口无效")?;
     let skip_local_dns =
         proxy_override().is_some() && matches!(target.host(), Some(url::Host::Domain(_)));
-    let addrs = if strict && !skip_local_dns {
-        network_policy::resolve_target(&target, strict).await?
-    } else {
-        Vec::new()
-    };
-    let http = match previous {
-        Some(prev) if same_addr_set(&prev.addrs, &addrs) => prev.http,
-        _ => Arc::new(build_client(host, &addrs, allow_retry)?),
-    };
-    let now = Instant::now();
-    let mut cache = CLIENTS.lock().map_err(|_| "HTTP 客户端锁失败")?;
-    if let Some(existing) = cached_client(&cache, &key, now) {
-        return Ok((target, existing));
+
+    if strict && !skip_local_dns {
+        if let Some(url::Host::Domain(host)) = target.host() {
+            let host_lower = host.trim_end_matches('.').to_ascii_lowercase();
+            let key = dns_cache_key(strict, &host_lower);
+            let hit = {
+                let cache = DNS_CACHE.lock().map_err(|_| "DNS 缓存锁失败")?;
+                cached_dns(&cache, &key, Instant::now()).is_some()
+            };
+            if !hit {
+                let flight = flight_lock(&key)?;
+                let _guard = flight.lock().await;
+                let hit_after = {
+                    let cache = DNS_CACHE.lock().map_err(|_| "DNS 缓存锁失败")?;
+                    cached_dns(&cache, &key, Instant::now()).is_some()
+                };
+                if !hit_after {
+                    let addrs = network_policy::resolve_target(&target, strict).await?;
+                    let now = Instant::now();
+                    let mut cache = DNS_CACHE.lock().map_err(|_| "DNS 缓存锁失败")?;
+                    cache.retain(|_, entry| now < entry.expires);
+                    if cache.len() >= 128 {
+                        cache.clear();
+                    }
+                    cache.insert(
+                        key,
+                        CachedDns {
+                            expires: now + CLIENT_TTL,
+                            host: host_lower,
+                            addrs,
+                        },
+                    );
+                }
+            }
+        }
     }
-    cache.retain(|_, entry| now < entry.expires);
-    if cache.len() >= 64 {
-        cache.clear();
-    }
-    cache.insert(
-        key,
-        CachedClient {
-            expires: now + CLIENT_TTL,
-            host: host.to_ascii_lowercase(),
-            addrs,
-            http: http.clone(),
-        },
-    );
+
+    let http = shared_client(allow_retry)?;
     Ok((target, http))
 }
 
 pub fn refresh_client() {
-    if let Ok(mut cache) = CLIENTS.lock() {
+    if let Ok(mut clients) = SHARED_CLIENTS.lock() {
+        *clients = [None, None];
+    }
+    if let Ok(mut cache) = DNS_CACHE.lock() {
         cache.clear();
     }
     if let Ok(mut flights) = CLIENT_FLIGHTS.lock() {
         flights.clear();
     }
     edge_crypto::clear_sessions();
+}
+
+/// 移动端切后台时释放空闲 HTTP 连接池与过期 DNS 条目，降低后台保活电量消耗与内存占用。
+pub fn trim_background_connections() {
+    if let Ok(mut clients) = SHARED_CLIENTS.lock() {
+        *clients = [None, None];
+    }
+    let now = Instant::now();
+    if let Ok(mut cache) = DNS_CACHE.lock() {
+        cache.retain(|_, entry| now < entry.expires);
+    }
+    if let Ok(mut flights) = CLIENT_FLIGHTS.lock() {
+        flights.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    if let Ok(mut healed) = LAST_HOST_HEAL.lock() {
+        healed.retain(|_, t| t.elapsed() < Duration::from_secs(30));
+    }
 }
 
 /// 不可信 GET 的统一入口；自动重定向被关闭，每一跳重新检查 URL、DNS 并固定解析地址。
@@ -423,7 +500,7 @@ static LAST_HOST_HEAL: Lazy<Mutex<HashMap<String, Instant>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn evict_host_client(host: &str) {
-    if let Ok(mut cache) = CLIENTS.lock() {
+    if let Ok(mut cache) = DNS_CACHE.lock() {
         cache.retain(|_, entry| !entry.host.eq_ignore_ascii_case(host));
     }
     edge_crypto::evict_host_sessions(host);
@@ -1533,29 +1610,30 @@ mod tests {
     #[test]
     fn pinned_clients_expire_without_extending_the_dns_ttl() {
         let now = Instant::now();
-        let client = Arc::new(reqwest::Client::new());
-        let mut cache = ClientCache::new();
+        let addr: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let mut cache = DnsCache::new();
         cache.insert(
-            "true:example.com:443:true".into(),
-            CachedClient {
+            dns_cache_key(true, "example.com"),
+            CachedDns {
                 expires: now + CLIENT_TTL,
                 host: "example.com".into(),
-                addrs: Vec::new(),
-                http: client.clone(),
+                addrs: vec![addr],
             },
         );
-        assert!(Arc::ptr_eq(
-            &cached_client(
-                &cache,
-                "true:example.com:443:true",
-                now + Duration::from_secs(119)
-            )
-            .unwrap(),
-            &client
-        ));
-        assert!(cached_client(&cache, "true:example.com:443:true", now + CLIENT_TTL).is_none());
-        assert!(cached_client(&cache, "false:example.com:443:true", now).is_none());
-        assert!(cached_client(&cache, "true:example.com:8443:true", now).is_none());
+        assert_eq!(
+            cached_dns(&cache, "true:example.com", now + Duration::from_secs(119)),
+            Some(vec![addr])
+        );
+        assert!(cached_dns(&cache, "true:example.com", now + CLIENT_TTL).is_none());
+        assert!(cached_dns(&cache, "false:example.com", now).is_none());
+        assert!(cached_dns(&cache, "true:other.example", now).is_none());
+
+        // 不同域名共用同一个共享 reqwest::Client 实例
+        let c1 = shared_client(true).unwrap();
+        let c2 = shared_client(true).unwrap();
+        let c3 = shared_client(false).unwrap();
+        assert!(Arc::ptr_eq(&c1, &c2));
+        assert!(!Arc::ptr_eq(&c1, &c3));
     }
 
     #[test]
@@ -1584,16 +1662,16 @@ mod tests {
         *LAST_HEAL.lock().unwrap() = None;
 
         let now = Instant::now();
+        let shared = shared_client(true).unwrap();
         {
-            let mut cache = CLIENTS.lock().unwrap();
+            let mut cache = DNS_CACHE.lock().unwrap();
             for host in ["cdn-a.test", "cdn-b.test"] {
                 cache.insert(
-                    format!("true:{host}:443:true"),
-                    CachedClient {
+                    dns_cache_key(true, host),
+                    CachedDns {
                         expires: now + CLIENT_TTL,
                         host: host.into(),
-                        addrs: Vec::new(),
-                        http: Arc::new(reqwest::Client::new()),
+                        addrs: vec!["1.1.1.1:443".parse().unwrap()],
                     },
                 );
             }
@@ -1601,13 +1679,16 @@ mod tests {
 
         heal_client_for("https://cdn-a.test/seg.ts", "connection reset");
         {
-            let cache = CLIENTS.lock().unwrap();
-            assert!(!cache.contains_key("true:cdn-a.test:443:true"));
-            assert!(cache.contains_key("true:cdn-b.test:443:true"));
+            let cache = DNS_CACHE.lock().unwrap();
+            assert!(!cache.contains_key("true:cdn-a.test"));
+            assert!(cache.contains_key("true:cdn-b.test"));
+            // 单域名连接重置不破坏全局共享 Client
+            assert!(Arc::ptr_eq(&shared, &shared_client(true).unwrap()));
         }
 
         heal_client_for("https://cdn-b.test/img.jpg", "tunnel error: failed to connect");
-        assert!(CLIENTS.lock().unwrap().is_empty());
+        assert!(DNS_CACHE.lock().unwrap().is_empty());
+        assert!(SHARED_CLIENTS.lock().unwrap()[1].is_none());
         refresh_client();
     }
 

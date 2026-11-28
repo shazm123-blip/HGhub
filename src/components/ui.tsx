@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cover, isAndroid, isIos, isMobile } from "../api";
+import { cover, isIos, isMobile } from "../api";
 import { pushBackHandler } from "../back";
 import { useToasts } from "../store";
 import { ICheck, IHeartF, IRefresh, ISparkF, IStarF } from "../icons";
@@ -309,7 +309,7 @@ export function Modal({ open, onClose, children, width = 340, ariaLabel }: {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center px-5"
       style={{ paddingTop: "calc(var(--sat, 0px) + 16px)", paddingBottom: "calc(var(--sab, 0px) + 16px)" }}>
-      <div className={`absolute inset-0 ${isAndroid ? "bg-black/70" : "bg-black/65 backdrop-blur-sm"} ${open ? "a-fade" : "opacity-0 transition-opacity"}`}
+      <div className={`absolute inset-0 bg-black/70 ${open ? "a-fade" : "opacity-0 transition-opacity"}`}
         style={{ touchAction: "none" }}
         onTouchMove={(e) => e.stopPropagation()}
         onClick={onClose} />
@@ -370,7 +370,7 @@ export function ToastHost() {
       className="fixed inset-x-0 z-[80] flex flex-col items-center gap-2 pointer-events-none px-6"
       style={isMobile ? { top: "calc(var(--sat, 0px) + 54px)" } : { bottom: 84 }}>
       {toasts.map((t) => (
-        <div key={t.id} className={`a-toast pointer-events-auto flex items-center gap-2.5 max-w-full rounded-(--r-sm) pl-3.5 pr-4 py-2.5 elev-3 ${isAndroid ? "bg-s4" : "bg-s4/95 backdrop-blur-md"}`}>
+        <div key={t.id} className="a-toast pointer-events-auto flex items-center gap-2.5 max-w-full rounded-(--r-sm) pl-3.5 pr-4 py-2.5 elev-3 bg-s4/[0.96]">
           {t.icon === "ok" && <ICheck size={16} className="text-mint shrink-0" />}
           {t.icon === "heart" && <IHeartF size={16} className="text-neon shrink-0" />}
           {t.icon === "star" && <IStarF size={16} className="text-amber shrink-0" />}

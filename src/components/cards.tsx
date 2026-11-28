@@ -1,9 +1,129 @@
-import { memo } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fmt } from "../api";
 import { useVideoOrientation } from "../videoMeta";
 import type { VideoCard } from "../types";
 import { IHeartF, IPlayF } from "../icons";
 import { Img } from "./ui";
+
+const VIRTUAL_THRESHOLD = 24;
+const OVERSCAN_ROWS = 3;
+
+/* ——— 通用轻量虚拟网格（仅渲染视口附近行，避免长列表与隐藏 Tab 累积大量 WebKit 解码位图） ——— */
+export function useVirtualGrid({
+  count,
+  wide,
+  active = true,
+  aspectRatio = 4 / 3,
+  extraHeight = 64,
+  gapPx = 12,
+}: {
+  count: number;
+  wide: boolean;
+  active?: boolean;
+  aspectRatio?: number;
+  extraHeight?: number;
+  gapPx?: number;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const enabled = count > VIRTUAL_THRESHOLD;
+  const [layout, setLayout] = useState(() => ({
+    cols: wide ? (typeof window !== "undefined" && window.innerWidth >= 1280 ? 4 : 3) : 2,
+    rowHeight: 280,
+  }));
+  const [range, setRange] = useState({ startRow: 0, endRow: 12 });
+
+  useLayoutEffect(() => {
+    if (!enabled) return undefined;
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    const scrollEl = wrap.closest<HTMLElement>(".scroll-y");
+
+    let colsCur = wide ? (window.innerWidth >= 1280 ? 4 : 3) : 2;
+    let rowHCur = 280;
+    let rafId = 0;
+
+    const measureLayout = () => {
+      const w = wrap.clientWidth;
+      if (w <= 0) return;
+      colsCur = wide ? (window.innerWidth >= 1280 ? 4 : 3) : 2;
+      const colW = Math.max(80, (w - gapPx * (colsCur - 1)) / colsCur);
+      rowHCur = Math.round(colW * aspectRatio + extraHeight);
+      setLayout((prev) => (prev.cols === colsCur && Math.abs(prev.rowHeight - rowHCur) <= 2 ? prev : { cols: colsCur, rowHeight: rowHCur }));
+    };
+
+    const updateRange = () => {
+      rafId = 0;
+      const totalRows = Math.ceil(count / colsCur);
+      if (!scrollEl) {
+        setRange({ startRow: 0, endRow: totalRows });
+        return;
+      }
+      const stride = Math.max(80, rowHCur + gapPx);
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      // 隐藏 Tab 时 getBoundingClientRect 可能尺寸为 0，此时仅保留 1 行窗口释放在内存中的离屏封面
+      if (!active || scrollRect.height <= 0) {
+        const approxRow = Math.max(0, Math.min(totalRows - 1, Math.floor(scrollEl.scrollTop / stride)));
+        const nextStart = Math.max(0, approxRow);
+        const nextEnd = Math.min(totalRows, approxRow + 2);
+        setRange((prev) => (prev.startRow === nextStart && prev.endRow === nextEnd ? prev : { startRow: nextStart, endRow: nextEnd }));
+        return;
+      }
+      const gridTopInScroll = wrapRect.top - scrollRect.top + scrollEl.scrollTop;
+      const relTop = scrollEl.scrollTop - gridTopInScroll;
+      const relBottom = relTop + scrollRect.height;
+      const nextStart = Math.max(0, Math.floor(relTop / stride) - OVERSCAN_ROWS);
+      const nextEnd = Math.min(totalRows, Math.ceil(relBottom / stride) + OVERSCAN_ROWS);
+      setRange((prev) => (prev.startRow === nextStart && prev.endRow === nextEnd ? prev : { startRow: nextStart, endRow: nextEnd }));
+    };
+
+    const scheduleUpdate = () => {
+      if (!rafId) rafId = requestAnimationFrame(updateRange);
+    };
+
+    measureLayout();
+    updateRange();
+
+    const ro = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+          measureLayout();
+          scheduleUpdate();
+        })
+      : null;
+    ro?.observe(wrap);
+    if (scrollEl) scrollEl.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate, { passive: true });
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      ro?.disconnect();
+      if (scrollEl) scrollEl.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [enabled, count, wide, active, aspectRatio, extraHeight, gapPx]);
+
+  useEffect(() => {
+    if (!enabled) setRange({ startRow: 0, endRow: Math.ceil(count / 2) });
+  }, [enabled, count]);
+
+  if (!enabled) {
+    return { wrapRef, startIdx: 0, endIdx: count, topPad: 0, bottomPad: 0 };
+  }
+
+  const totalRows = Math.ceil(count / layout.cols);
+  const startRow = Math.max(0, Math.min(totalRows, range.startRow));
+  const endRow = Math.max(startRow, Math.min(totalRows, range.endRow));
+  const stride = layout.rowHeight + gapPx;
+  const topPad = startRow * stride;
+  const bottomPad = Math.max(0, (totalRows - endRow) * stride);
+  return {
+    wrapRef,
+    startIdx: startRow * layout.cols,
+    endIdx: Math.min(count, endRow * layout.cols),
+    topPad,
+    bottomPad,
+  };
+}
 
 /* ——— 画廊级瀑布流海报卡片（纯净高清封面 + 清晰下方排版） ——— */
 export const WaterfallCard = memo(function WaterfallCard({ v, onOpen, eager = false }: {
@@ -34,7 +154,7 @@ export const WaterfallCard = memo(function WaterfallCard({ v, onOpen, eager = fa
         </span>
       </div>
       <div className="pt-2 px-0.5">
-        <div className="cover-title text-[13px] font-semibold text-on leading-snug clamp-2">{v.title}</div>
+        <div className="cover-title text-[13px] font-semibold text-on leading-snug clamp-2 min-h-[36px]">{v.title}</div>
         <div className="flex items-center gap-1.5 mt-1 text-[11px] text-mut">
           <span className="truncate flex-1 min-w-0">{v.author?.name || "黄果短剧"}</span>
           {v.score > 0 ? (
@@ -48,15 +168,28 @@ export const WaterfallCard = memo(function WaterfallCard({ v, onOpen, eager = fa
   );
 });
 
-/* ——— 画廊网格（避免 WebKit columns-2 卡片切半与重排跳动） ——— */
-export const Masonry = memo(function Masonry({ videos, onOpen, wide = false, gap = "gap-3" }: {
-  videos: VideoCard[]; onOpen: (v: VideoCard) => void; wide?: boolean; gap?: string;
+/* ——— 画廊网格（>24 项自动启用虚拟窗口，避免长列表与隐藏 Tab 堆叠解码位图） ——— */
+export const Masonry = memo(function Masonry({ videos, onOpen, wide = false, gap = "gap-3", active = true }: {
+  videos: VideoCard[]; onOpen: (v: VideoCard) => void; wide?: boolean; gap?: string; active?: boolean;
 }) {
+  const { wrapRef, startIdx, endIdx, topPad, bottomPad } = useVirtualGrid({
+    count: videos.length,
+    wide,
+    active,
+    aspectRatio: 4 / 3,
+    extraHeight: 64,
+    gapPx: 12,
+  });
+  const slice = videos.slice(startIdx, endIdx);
   return (
-    <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} ${gap}`}>
-      {videos.map((v, idx) => (
-        <WaterfallCard key={v.id} v={v} eager={idx < 6} onOpen={onOpen} />
-      ))}
+    <div ref={wrapRef}>
+      {topPad > 0 && <div aria-hidden="true" style={{ height: topPad }} />}
+      <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} ${gap}`}>
+        {slice.map((v, idx) => (
+          <WaterfallCard key={v.id} v={v} eager={startIdx + idx < 6} onOpen={onOpen} />
+        ))}
+      </div>
+      {bottomPad > 0 && <div aria-hidden="true" style={{ height: bottomPad }} />}
     </div>
   );
 });

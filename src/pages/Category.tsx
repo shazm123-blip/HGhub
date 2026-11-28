@@ -1,6 +1,6 @@
 import IosNavigation from "../components/IosNavigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, isIos, isMacos, fmt } from "../api";
+import { api, isIos, isMacos, fmt, prefetchPlayInfo } from "../api";
 import type { Post, VideoCard } from "../types";
 import { useDataVersion, useStoreActions } from "../store";
 import { Masonry, RowCard } from "../components/cards";
@@ -256,6 +256,7 @@ const ChannelPreviewSection = memo(function ChannelPreviewSection({
   const rowIds = useMemo(() => list.map((x) => x.id), [list]);
   const rowCovers = useMemo(() => Object.fromEntries(list.map((x) => [x.id, x.cover])), [list]);
   const handleOpen = useCallback((v: VideoCard) => {
+    prefetchPlayInfo(v.id, 1);
     push({
       kind: "feed",
       videoIds: rowIds,
@@ -401,6 +402,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
   const displayedRef = useRef(displayed);
   displayedRef.current = displayed;
   const openChannelVideo = useCallback((v: VideoCard) => {
+    prefetchPlayInfo(v.id, 1);
     const list = displayedRef.current;
     push({
       kind: "feed",

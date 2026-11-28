@@ -773,9 +773,12 @@ pub async fn cache_clear() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn cache_trim_memory() -> Result<(), String> {
-    tokio::task::spawn_blocking(crate::media::trim_memory_caches)
-        .await
-        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(|| {
+        crate::media::trim_memory_caches();
+        crate::net::trim_background_connections();
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

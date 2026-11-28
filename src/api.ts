@@ -147,7 +147,10 @@ export const api = {
 
   /* 线路（数据源）：固定线路写死在 Rust 侧，镜像线路按需从地址发布页拉取 */
   lineState: () => call<LineState>("line_state"),
-  lineSet: (url: string) => call<string>("line_set", { url }),
+  lineSet: (url: string) => {
+    clearPrefetchedPlay();
+    return call<string>("line_set", { url });
+  },
   lineMirrors: () => call<LineMirrors>("line_mirrors"),
   lineProbe: (urls: string[]) => call<LineProbe[]>("line_probe", { urls }),
 
@@ -155,6 +158,45 @@ export const api = {
   checkUpdate: () => call<UpdateInfo>("check_update"),
   openUrl: (url: string) => call<void>("open_url", { url }),
 };
+
+/* ── 点击即并发预取播放地址（单次消费 + 15s 自动过期，缩短选剧起播 TTFF） ── */
+const PLAY_PREFETCH_TTL_MS = 15_000;
+const prefetchedPlays = new Map<string, { at: number; promise: Promise<PlayInfo> }>();
+
+export function clearPrefetchedPlay() {
+  prefetchedPlays.clear();
+}
+
+export function prefetchPlayInfo(id: number, ep = 1) {
+  if (!id || ep <= 0) return;
+  const key = `${id}:${ep}`;
+  const now = Date.now();
+  const existing = prefetchedPlays.get(key);
+  if (existing && now - existing.at < PLAY_PREFETCH_TTL_MS) return;
+  if (prefetchedPlays.size >= 8) {
+    for (const [k, entry] of prefetchedPlays) {
+      if (now - entry.at >= PLAY_PREFETCH_TTL_MS || prefetchedPlays.size >= 8) {
+        prefetchedPlays.delete(k);
+      }
+    }
+  }
+  const promise = api.play(id, ep);
+  promise.catch(() => {
+    const cur = prefetchedPlays.get(key);
+    if (cur?.promise === promise) prefetchedPlays.delete(key);
+  });
+  prefetchedPlays.set(key, { at: now, promise });
+}
+
+export function consumePrefetchedPlay(id: number, ep: number): Promise<PlayInfo> {
+  const key = `${id}:${ep}`;
+  const entry = prefetchedPlays.get(key);
+  if (entry) {
+    prefetchedPlays.delete(key);
+    if (Date.now() - entry.at < PLAY_PREFETCH_TTL_MS) return entry.promise;
+  }
+  return api.play(id, ep);
+}
 
 /* ── 更新检查 ───────────────────────────────────────────── */
 

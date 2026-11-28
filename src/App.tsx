@@ -463,7 +463,7 @@ function OfflineBanner() {
       aria-live="polite"
       className="fixed inset-x-0 z-[85] flex justify-center pointer-events-none px-4"
       style={{ top: isMobile ? "calc(var(--sat, 0px) + 8px)" : 52 }}>
-      <div className={`pointer-events-auto a-toast flex items-center gap-2.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium elev-3 ${offline ? "bg-danger text-on-danger" : "bg-s4/95 text-on backdrop-blur-md"}`}>
+      <div className={`pointer-events-auto a-toast flex items-center gap-2.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium elev-3 ${offline ? "bg-danger text-on-danger" : "bg-s4/[0.96] text-on"}`}>
         <span className={`w-2 h-2 rounded-full ${offline ? "bg-current opacity-85" : "bg-mint"}`} />
         <span>{offline ? "当前网络已断开，已进入离线状态" : "网络已恢复连接"}</span>
         {offline && (

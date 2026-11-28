@@ -4,6 +4,7 @@ import { api, isIos, isMacos, cover, fmt, isMobile } from "../api";
 import type { Comment, Post } from "../types";
 import { useDataVersion, useInteractions, usePlaybackPrefs, useSecurityUi, useSessionUser, useStoreActions } from "../store";
 import { Avatar, CardGridSkeleton, Empty, Img, PostDetailSkeleton, PullToRefresh } from "../components/ui";
+import { useVirtualGrid } from "../components/cards";
 import Player from "../components/Player";
 import { pushBackHandler } from "../back";
 import { IBack, IClose, IComment, IFireF, IHeart, IHeartF, IPlayF, IRefresh, IStar, IStarF } from "../icons";
@@ -90,6 +91,15 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pages, err]);
 
+  const { wrapRef, startIdx, endIdx, topPad, bottomPad } = useVirtualGrid({
+    count: items.length,
+    wide,
+    aspectRatio: 5 / 4,
+    extraHeight: 46,
+    gapPx: 12,
+  });
+  const visibleItems = items.slice(startIdx, endIdx);
+
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
       {isIos ? (
@@ -127,22 +137,26 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
       <PullToRefresh ref={listRef} onRefresh={() => loadMore(true)} refreshing={refreshing}
         className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {items.length ? (
-          <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-3`}>
-            {items.map((p) => (
-              <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="cv-card group pressable block text-left w-full">
-                <div className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1">
-                  <Img src={p.cover} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
-                  <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/62 to-transparent pointer-events-none" />
-                  <span className="absolute bottom-1.5 right-2 flex items-center gap-1 text-[10.5px] font-semibold text-white/92 tsh tabular-nums">
-                    <IFireF size={10} className="text-primary" />{fmt(p.hot)}
-                  </span>
-                </div>
-                <div className="pt-2 px-0.5">
-                  <div className="cover-title text-[13px] font-semibold text-on clamp-2 leading-snug">{p.title}</div>
-                </div>
-              </button>
-            ))}
+          <div ref={wrapRef}>
+            {topPad > 0 && <div aria-hidden="true" style={{ height: topPad }} />}
+            <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-3`}>
+              {visibleItems.map((p, idx) => (
+                <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
+                  className="cv-card group pressable block text-left w-full">
+                  <div className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1">
+                    <Img src={p.cover} eager={startIdx + idx < 6} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
+                    <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/62 to-transparent pointer-events-none" />
+                    <span className="absolute bottom-1.5 right-2 flex items-center gap-1 text-[10.5px] font-semibold text-white/92 tsh tabular-nums">
+                      <IFireF size={10} className="text-primary" />{fmt(p.hot)}
+                    </span>
+                  </div>
+                  <div className="pt-2 px-0.5">
+                    <div className="cover-title text-[13px] font-semibold text-on clamp-2 leading-snug min-h-[36px]">{p.title}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {bottomPad > 0 && <div aria-hidden="true" style={{ height: bottomPad }} />}
           </div>
         ) : loading ? (
           <CardGridSkeleton wide={wide} aspect="aspect-[4/5]" gap="gap-3" />

@@ -33,6 +33,8 @@ type Props = {
   panX?: number;
   panY?: number;
   isGesturing?: boolean;
+  /** 极致省电模式：收紧 HLS 预缓冲与关闭分片预取 */
+  powerSaver?: boolean;
   /** 换源后重新套用，避免切集时音量/倍速被浏览器重置 */
   volume?: number;
   rate?: number;
@@ -59,7 +61,7 @@ function applyVideoTransform(v: HTMLVideoElement, scale: number, panX: number, p
 /** 只负责「播」：hls.js + video 元素，控制条由外层渲染。 */
 const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   { src, poster, autoPlay = true, active = true, diagnosticContext = {}, muted = false, loop = false, fit = "contain",
-    scale = 1, panX = 0, panY = 0, isGesturing = false,
+    scale = 1, panX = 0, panY = 0, isGesturing = false, powerSaver = false,
     volume = 1, rate = 1,
     onTime, onDuration, onBuffered, onSize, onCanPlay, onPlaying, onPause, onWaiting, onEnded, onError, onClick, className = "" },
   ref,
@@ -268,10 +270,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         preferManagedMediaSource: false,
         autoStartLoad: false,
         lowLatencyMode: false,
-        maxBufferLength: mobileBuffer ? 12 : 30,
-        maxMaxBufferLength: mobileBuffer ? 20 : 60,
-        maxBufferSize: mobileBuffer ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
-        backBufferLength: mobileBuffer ? 6 : 30,
+        maxBufferLength: powerSaver ? 8 : (mobileBuffer ? 12 : 30),
+        maxMaxBufferLength: powerSaver ? 14 : (mobileBuffer ? 20 : 60),
+        maxBufferSize: powerSaver ? 10 * 1000 * 1000 : (mobileBuffer ? 15 * 1000 * 1000 : 60 * 1000 * 1000),
+        backBufferLength: powerSaver ? 4 : (mobileBuffer ? 6 : 30),
         maxBufferHole: 0.5,
         highBufferWatchdogPeriod: 2,
         nudgeOffset: 0.25,
@@ -283,7 +285,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         fragLoadingTimeOut: 25000,
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 400,
-        startFragPrefetch: !mobileBuffer,
+        startFragPrefetch: !mobileBuffer && !powerSaver,
       });
       hlsRef.current = hls;
       observeHls(hls, trace, HlsLib);

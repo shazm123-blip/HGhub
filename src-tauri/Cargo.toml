@@ -32,7 +32,6 @@ reqwest = { version = "0.12", default-features = false, features = [
   "http2",
   "system-proxy",
   "gzip",
-  "brotli",
   "json",
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
@@ -65,5 +64,5 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 panic = "unwind"
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = "z"
 strip = true

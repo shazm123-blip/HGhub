@@ -1,8 +1,8 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, cover, fmt, fmtTime, friendlyError, isAndroid, isIos, isMobile } from "../api";
+import { api, consumePrefetchedPlay, cover, fmt, fmtTime, friendlyError, isIos, isMobile } from "../api";
 import type { Detail, Episode, Post } from "../types";
-import { useDataVersion, useInteractions, usePlaybackPrefs, useStoreActions, useViewportMode } from "../store";
+import { useDataVersion, useInteractions, usePlaybackPrefs, useStoreActions, useThemeState, useViewportMode } from "../store";
 import { fetchVideoDetailCached, getVideoOrientation, recordVideoOrientation } from "../videoMeta";
 import { Img, Sheet } from "./ui";
 import VideoSurface, { type VideoHandle } from "./VideoSurface";
@@ -64,6 +64,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const { isLiked, isFav, follows } = useInteractions();
   const { theater, fs } = useViewportMode();
   const { lineVersion } = useDataVersion();
+  const { powerSaver } = useThemeState();
+  const powerSaverRef = useRef(powerSaver);
+  powerSaverRef.current = powerSaver;
   const { muted, setMuted, volume, setVolume, landscapeFitPref, setLandscapeFitPref, playbackRate: rate, setPlaybackRate: setRate } = usePlaybackPrefs();
   const isDesktop = !isMobile;
 
@@ -241,7 +244,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const playUrlsRef = useRef(playUrls);
   playUrlsRef.current = playUrls;
   const prewarmUrl = useCallback((key: string, url: string) => {
-    if (!url || prewarmedRef.current.has(key)) return;
+    if (!url || powerSaverRef.current || prewarmedRef.current.has(key)) return;
     if (prewarmedRef.current.size > 120) prewarmedRef.current.clear();
     prewarmedRef.current.add(key);
     void api.prewarmMedia(url);
@@ -697,12 +700,12 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, safeIndex, videoIds, playTry]);
 
-  /* 拉播放地址 */
+  /* 拉播放地址（首次进入优先消费点击时并行预取的 Promise，手动重试则强制重拉） */
   useEffect(() => {
     if (kind !== "video" || !curId) return undefined;
     if (playUrls[playKey]) return undefined;
     let alive = true;
-    api.play(curId, curEp)
+    (playTry === 0 ? consumePrefetchedPlay(curId, curEp) : api.play(curId, curEp))
       .then((info) => {
         if (!alive) return;
         if (!info?.video_url) throw new Error("暂无播放地址");
@@ -1591,6 +1594,7 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       volume={volume}
                       rate={effRate}
                       fit={effectiveFit}
+                      powerSaver={powerSaver}
                       onClick={() => {
                         if (!isDesktop || Date.now() < suppressClickUntilRef.current) return;
                         const now = Date.now();
@@ -1618,11 +1622,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                         cancelKeepPlaying();
                         setPaused(false); setWaiting(false); setErr(""); setEndedOverlay(false);
                         window.clearTimeout(nextVideoPrefetchTimerRef.current);
-                        if (kind === "video" && mode === "home") {
+                        if (kind === "video" && mode === "home" && !powerSaverRef.current) {
                           const nextVid = videoIds[safeIndex + 1];
                           if (nextVid) {
                             nextVideoPrefetchTimerRef.current = window.setTimeout(() => {
-                              if (activeRef.current) prefetchPlay(nextVid, epMap[nextVid] || 1);
+                              if (activeRef.current && !powerSaverRef.current) prefetchPlay(nextVid, epMap[nextVid] || 1);
                             }, 2000);
                           }
                         }
@@ -1813,11 +1817,11 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                         <div className="absolute inset-0 z-50" onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
                           <div className="absolute inset-0 bg-black/55" onClick={() => setFsEpOpen(false)} />
                           {(rotated || vpLandscape) ? (
-                            <div className={`absolute inset-y-0 right-0 w-[280px] max-w-[75%] ${isAndroid ? "bg-s1" : "bg-s1/95 backdrop-blur-md"} border-l border-sep shadow-2xl a-panel-in`}>
+                            <div className="absolute inset-y-0 right-0 w-[280px] max-w-[75%] bg-s1/[0.97] border-l border-sep shadow-2xl a-panel-in">
                               <EpisodesPanel videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setFsEpOpen(false)} />
                             </div>
                           ) : (
-                            <div className={`absolute inset-x-0 bottom-0 h-[58%] rounded-t-2xl ${isAndroid ? "bg-s1" : "bg-s1/95 backdrop-blur-md"} border-t border-sep shadow-2xl a-sheet`}
+                            <div className="absolute inset-x-0 bottom-0 h-[58%] rounded-t-2xl bg-s1/[0.97] border-t border-sep shadow-2xl a-sheet"
                               style={{ paddingBottom: "var(--sab, 0px)" }}>
                               <EpisodesPanel videoId={curId} episodes={episodes} current={curEp} onPick={pickEp} onClose={() => setFsEpOpen(false)} />
                             </div>

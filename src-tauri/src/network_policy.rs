@@ -193,23 +193,35 @@ fn sort_ipv6_first(addrs: &mut Vec<SocketAddr>) {
     addrs.sort_by_key(|addr| addr.is_ipv4());
 }
 
-pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, String> {
-    let port = url.port_or_known_default().ok_or("目标端口无效")?;
-    let mut addrs = match url.host().ok_or("目标缺少主机名")? {
-        Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
-        Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
-        Host::Domain(host) => tokio::time::timeout(
-            Duration::from_secs(10),
-            tokio::net::lookup_host((host, port)),
-        )
-        .await
-        .map_err(|_| "DNS 解析超时")?
-        .map_err(|_| "DNS 解析失败")?
-        .collect(),
-    };
+pub async fn resolve_host(host: &str, port: u16, strict: bool) -> Result<Vec<SocketAddr>, String> {
+    let mut addrs: Vec<SocketAddr> = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| "DNS 解析超时")?
+    .map_err(|_| "DNS 解析失败")?
+    .collect();
     sort_ipv6_first(&mut addrs);
     check_addresses_with_mode(&addrs, strict)?;
     Ok(addrs)
+}
+
+pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, String> {
+    let port = url.port_or_known_default().ok_or("目标端口无效")?;
+    match url.host().ok_or("目标缺少主机名")? {
+        Host::Ipv4(ip) => {
+            let addrs = vec![SocketAddr::new(ip.into(), port)];
+            check_addresses_with_mode(&addrs, strict)?;
+            Ok(addrs)
+        }
+        Host::Ipv6(ip) => {
+            let addrs = vec![SocketAddr::new(ip.into(), port)];
+            check_addresses_with_mode(&addrs, strict)?;
+            Ok(addrs)
+        }
+        Host::Domain(host) => resolve_host(host, port, strict).await,
+    }
 }
 
 pub fn redirect_target(current: &Url, location: &str) -> Result<Url, String> {
