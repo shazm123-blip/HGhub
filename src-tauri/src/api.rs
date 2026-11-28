@@ -387,6 +387,7 @@ pub async fn app_boot(state: State<'_, Api>) -> Result<Value, String> {
         "base": origin,
         "strict_security": crate::network_policy::strict_security(),
         "cli_relaxed": crate::network_policy::cli_strict_override() == Some(false),
+        "media_proxy_base": crate::stream_proxy::base_url(),
     }))
 }
 

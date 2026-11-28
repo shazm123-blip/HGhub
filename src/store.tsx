@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, platform as envPlatform, getApiBase, observeSessionExpiry, SESSION_EXPIRED_MESSAGE, setApiBase } from "./api";
+import { api, platform as envPlatform, getApiBase, observeSessionExpiry, SESSION_EXPIRED_MESSAGE, setApiBase, setNativeMediaBase } from "./api";
 import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./security";
 import {
   bindVideoMetaPersistence,
@@ -566,6 +566,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     api.boot()
       .then((r) => {
         if (!alive) return;
+        if (r.media_proxy_base) setNativeMediaBase(r.media_proxy_base);
         if (sessionChange.current === revision) {
           if (r.base) setApiBase(r.base);
           if (r.user && (r.user as User).id) applyUser(r.user as User, true);

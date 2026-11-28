@@ -1,6 +1,6 @@
 import { memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, forwardRef, useState } from "react";
 import type Hls from "hls.js";
-import { isLocalMedia, isMobile, mediaUrl, platform } from "../api";
+import { isLocalMedia, isMobile, mediaUrl, nativeMediaUrl, platform } from "../api";
 import { getLoadedHls, loadHls, type HlsCtor } from "../hlsLoader";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
@@ -71,6 +71,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
   const recoverCountRef = useRef(0);
   const recoverTimerRef = useRef<number | null>(null);
   const seekCleanupRef = useRef<(() => void) | null>(null);
+  const nativeFallbackRef = useRef<(() => void) | null>(null);
   const lastSizeRef = useRef({ w: 0, h: 0 });
   const lastBufferedRef = useRef(-1);
   const [ready, setReady] = useState(false);
@@ -245,10 +246,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     };
     applySettings();
 
-    const attachNative = () => {
+    const attachNative = (targetUrl = url, engine = "native") => {
       if (disposed || videoRef.current !== video) return;
-      trace("source.load", { engine: "native", auto_play: autoPlay, resource: mediaResource(src) });
-      video.src = url;
+      trace("source.load", { engine, auto_play: autoPlay, resource: mediaResource(src) });
+      video.src = targetUrl;
       if (autoPlay) activity.play("native_autoplay", true);
     };
 
@@ -342,8 +343,27 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       });
     };
 
+    nativeFallbackRef.current = null;
+    const nativeProxyUrl = isIos ? nativeMediaUrl(url) : "";
+    const preferIosNativeHls = Boolean(
+      isIos && useHls && nativeProxyUrl && video.canPlayType("application/vnd.apple.mpegurl"),
+    );
+
     if (!useHls) {
-      attachNative();
+      attachNative(nativeProxyUrl || url, nativeProxyUrl ? "native_proxy" : "native");
+    } else if (preferIosNativeHls) {
+      // iOS 优先走本地回环代理 + 原生 AVPlayer 硬件硬解，绕过主线程 hls.js 转封装；异常时自动无感回退 hls.js
+      nativeFallbackRef.current = () => {
+        nativeFallbackRef.current = null;
+        if (disposed || videoRef.current !== video) return;
+        trace("native.fallback_to_hls", { resource: mediaResource(src) });
+        video.removeAttribute("src");
+        try { video.load(); } catch { /* ignore */ }
+        const loaded = getLoadedHls();
+        if (loaded) attachHls(loaded);
+        else void loadHls().then(attachHls).catch(() => onError?.("视频加载失败"));
+      };
+      attachNative(nativeProxyUrl, "native_hls_proxy");
     } else {
       const loaded = getLoadedHls();
       if (loaded) attachHls(loaded);
@@ -352,6 +372,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
 
     return () => {
       disposed = true;
+      nativeFallbackRef.current = null;
       trace("source.cleanup");
       seekCleanupRef.current?.();
       seekCleanupRef.current = null;
@@ -413,10 +434,17 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         ref={videoRef}
         playsInline
         webkit-playsinline="true"
-        preload="auto"
+        preload={powerSaver ? "metadata" : "auto"}
         muted={muted}
         loop={loop}
         onClick={onClick}
+        onError={() => {
+          if (nativeFallbackRef.current) {
+            nativeFallbackRef.current();
+          } else if (!hlsRef.current) {
+            onError?.("视频播放失败");
+          }
+        }}
         className={`w-full h-full bg-black ${fit === "cover" ? "object-cover" : "object-contain"}`}
         style={{
           opacity: ready ? 1 : 0,

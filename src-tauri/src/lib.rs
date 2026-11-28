@@ -9,6 +9,7 @@ mod net;
 mod network_policy;
 mod playback_log;
 mod session;
+mod stream_proxy;
 
 use api::Api;
 use tauri::Manager;
@@ -55,8 +56,28 @@ fn allowed_media_protocol_origin(origin: &str) -> bool {
         || (cfg!(any(target_os = "macos", target_os = "ios")) && origin == "null")
 }
 
+#[cfg(any(target_os = "ios", target_os = "android"))]
+static MOBILE_RUNTIME: once_cell::sync::OnceCell<tokio::runtime::Runtime> =
+    once_cell::sync::OnceCell::new();
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 移动端收紧 Tokio 工作线程数（2 核 I/O 线程 + 6 阻塞池），降低常驻线程栈内存与唤醒开销
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        if let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(6)
+            .enable_all()
+            .build()
+        {
+            let handle = rt.handle().clone();
+            if MOBILE_RUNTIME.set(rt).is_ok() {
+                tauri::async_runtime::set(handle);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_opener::Builder::new()
@@ -79,6 +100,11 @@ pub fn run() {
                 .or_else(|_| app.path().app_data_dir().map(|d| d.join("cache")));
             if let Ok(cache_dir) = cache_root {
                 media::bind_cache_dir(&cache_dir.join("covers"));
+            }
+            // iOS 启动本地回环流媒体代理，使原生 AVPlayer 硬件硬解 HLS（失败自动回退 hg:// + hls.js）
+            #[cfg(target_os = "ios")]
+            {
+                let _ = tauri::async_runtime::block_on(stream_proxy::start_on_current_runtime());
             }
             // macOS 主窗口在此创建：先按系统红绿灯尺寸算出居中位置（见 macos_titlebar.rs）
             #[cfg(target_os = "macos")]

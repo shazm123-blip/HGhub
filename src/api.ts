@@ -35,8 +35,32 @@ export const setApiBase = (next?: string) => {
   if (next && /^https?:\/\//i.test(next)) apiBase = next.replace(/\/+$/, "");
 };
 
+/** iOS 本地回环流媒体代理基址（形如 `http://127.0.0.1:<port>/<token>`），专供原生 AVPlayer 硬件硬解 HLS */
+let nativeMediaBase = "";
+export const getNativeMediaBase = () => nativeMediaBase;
+export const setNativeMediaBase = (next?: string | null) => {
+  if (typeof next === "string" && /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{32}$/i.test(next.trim())) {
+    nativeMediaBase = next.trim();
+  }
+};
+
 /** src 是否已是本地协议地址（避免在详情页把代理地址再包一层） */
-export const isLocalMedia = (src: string) => src.startsWith(`${LOCAL}/`);
+export const isLocalMedia = (src: string) =>
+  src.startsWith(`${LOCAL}/`) || (Boolean(nativeMediaBase) && src.startsWith(`${nativeMediaBase}/`));
+
+/** 把本地 hg:// 或原始媒体 URL 映射为 iOS 回环代理地址（未启用时返回空串） */
+export const nativeMediaUrl = (rawOrLocal: string): string => {
+  if (!nativeMediaBase) return "";
+  if (rawOrLocal.startsWith(`${nativeMediaBase}/`)) return rawOrLocal;
+  if (rawOrLocal.startsWith(`${LOCAL}/hls?`) || rawOrLocal.startsWith(`${LOCAL}/seg?`)) {
+    return `${nativeMediaBase}${rawOrLocal.slice(LOCAL.length)}`;
+  }
+  const url = mediaUrl(rawOrLocal);
+  if (url.startsWith(`${LOCAL}/hls?`) || url.startsWith(`${LOCAL}/seg?`)) {
+    return `${nativeMediaBase}${url.slice(LOCAL.length)}`;
+  }
+  return "";
+};
 
 /** 封面：经本地协议解密（站点封面是 AES 密文）。 */
 export const cover = (url?: string, _w = 480) => {
@@ -104,6 +128,7 @@ export const api = {
       base: string;
       strict_security?: boolean;
       cli_relaxed?: boolean;
+      media_proxy_base?: string | null;
     }>("app_boot"),
   securitySet: (strict: boolean) => call<boolean>("security_set", { strict }),
   login: (username: string, password: string) =>

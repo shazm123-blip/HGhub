@@ -82,7 +82,9 @@ export async function copyPlaybackLog() {
 export function mediaResource(raw: string) {
   try {
     const url = new URL(raw);
-    if (url.protocol === "hg:" || url.hostname === "hg.localhost") raw = url.searchParams.get("u") || raw;
+    if (url.protocol === "hg:" || url.hostname === "hg.localhost" || url.hostname === "127.0.0.1") {
+      raw = url.searchParams.get("u") || raw;
+    }
   } catch { /* still fingerprint invalid targets without logging their contents */ }
   let hash = 2166136261;
   for (const b of new TextEncoder().encode(raw)) hash = Math.imul(hash ^ b, 16777619) >>> 0;

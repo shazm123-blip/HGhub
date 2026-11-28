@@ -1272,6 +1272,11 @@ pub fn cancel_prewarm() {
     }
 }
 
+/// 预热播放列表时使用的基址：iOS 启动回环流媒体代理后与 AVPlayer 共享同一缓存键，避免重复改写与拉取。
+fn preferred_hls_origin() -> String {
+    crate::stream_proxy::base_url().unwrap_or_else(|| LOCAL_ORIGIN.to_string())
+}
+
 /// 后台预热即将切换的 HLS 流：清单 → 首条 Key（或嵌套子清单）→ 首条分片。
 pub fn prewarm_hls(url: &str) {
     let trimmed = url.trim();
@@ -1282,6 +1287,7 @@ pub fn prewarm_hls(url: &str) {
         return;
     }
     let url = trimmed.to_string();
+    let origin = preferred_hls_origin();
     let gen = PREWARM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let handle = tokio::spawn(async move {
         let Ok(_permit) = PREWARM_SEM.acquire().await else {
@@ -1290,13 +1296,13 @@ pub fn prewarm_hls(url: &str) {
         if PREWARM_GEN.load(Ordering::SeqCst) != gen {
             return;
         }
-        let Ok(playlist) = load_playlist(&url, LOCAL_ORIGIN).await else {
+        let Ok(playlist) = load_playlist(&url, &origin).await else {
             return;
         };
         if PREWARM_GEN.load(Ordering::SeqCst) != gen {
             return;
         }
-        let (key_uri, seg_uri) = extract_first_key_and_segment(&playlist, LOCAL_ORIGIN);
+        let (key_uri, seg_uri) = extract_first_key_and_segment(&playlist, &origin);
         if let Some(key) = key_uri {
             if PREWARM_GEN.load(Ordering::SeqCst) != gen {
                 return;
@@ -1314,8 +1320,8 @@ pub fn prewarm_hls(url: &str) {
         };
         if is_playlist_payload(ctype.as_deref(), &bytes) {
             if let Ok(text) = std::str::from_utf8(bytes.as_slice()) {
-                let nested = rewrite_playlist(&seg, text, LOCAL_ORIGIN);
-                let (nested_key, nested_seg) = extract_first_key_and_segment(&nested, LOCAL_ORIGIN);
+                let nested = rewrite_playlist(&seg, text, &origin);
+                let (nested_key, nested_seg) = extract_first_key_and_segment(&nested, &origin);
                 if let Some(key) = nested_key {
                     if PREWARM_GEN.load(Ordering::SeqCst) != gen {
                         return;
