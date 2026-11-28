@@ -765,14 +765,32 @@ pub async fn api_follow(state: State<'_, Api>, uid: i64, on: bool) -> Result<Val
 
 #[tauri::command]
 pub async fn cache_clear() -> Result<(), String> {
-    crate::media::clear_caches();
+    tokio::task::spawn_blocking(crate::media::clear_caches)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cache_trim_memory() -> Result<(), String> {
+    tokio::task::spawn_blocking(crate::media::trim_memory_caches)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn cache_stats() -> Result<Value, String> {
-    let (entries, bytes) = crate::media::cache_stats();
+    let (entries, bytes) = tokio::task::spawn_blocking(crate::media::cache_stats)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(json!({ "entries": entries, "bytes": bytes }))
+}
+
+#[tauri::command]
+pub async fn media_prewarm(url: String) -> Result<(), String> {
+    crate::media::prewarm_hls(&url);
+    Ok(())
 }
 
 /* ───────────────────────── 吃瓜帖子互动 ───────────────────────── */

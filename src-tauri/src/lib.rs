@@ -1,4 +1,5 @@
 mod api;
+mod edge_crypto;
 mod lines;
 mod logging;
 #[cfg(target_os = "macos")]
@@ -71,6 +72,13 @@ pub fn run() {
                 playback_log::bind(&dir);
                 let state: tauri::State<Api> = app.state();
                 state.session.bind(dir);
+            }
+            let cache_root = app
+                .path()
+                .app_cache_dir()
+                .or_else(|_| app.path().app_data_dir().map(|d| d.join("cache")));
+            if let Ok(cache_dir) = cache_root {
+                media::bind_cache_dir(&cache_dir.join("covers"));
             }
             // macOS 主窗口在此创建：先按系统红绿灯尺寸算出居中位置（见 macos_titlebar.rs）
             #[cfg(target_os = "macos")]
@@ -194,7 +202,9 @@ pub fn run() {
             api::api_rank,
             api::api_search,
             api::cache_clear,
+            api::cache_trim_memory,
             api::cache_stats,
+            api::media_prewarm,
             api::api_posts,
             api::api_post,
             api::api_post_like,

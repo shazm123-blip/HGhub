@@ -1,6 +1,7 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, forwardRef, useState } from "react";
-import Hls from "hls.js";
-import { isLocalMedia, mediaUrl, platform } from "../api";
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, forwardRef, useState } from "react";
+import type Hls from "hls.js";
+import { isLocalMedia, isMobile, mediaUrl, platform } from "../api";
+import { getLoadedHls, loadHls, type HlsCtor } from "../hlsLoader";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 
@@ -14,6 +15,7 @@ export type VideoHandle = {
   rate: (r: number) => void;
   mute: (m: boolean) => void;
   volume: (v: number) => void;
+  setTransform: (scale: number, x: number, y: number, gesturing: boolean) => void;
   reload: () => void;
 };
 
@@ -47,6 +49,12 @@ type Props = {
   onClick?: () => void;
   className?: string;
 };
+
+function applyVideoTransform(v: HTMLVideoElement, scale: number, panX: number, panY: number, isGesturing: boolean) {
+  const hasTransform = scale !== 1 || panX !== 0 || panY !== 0;
+  v.style.transition = isGesturing ? "opacity .25s" : "opacity .25s, transform .2s cubic-bezier(.2,0,0,1)";
+  v.style.transform = hasTransform ? `translate3d(${panX}px, ${panY}px, 0) scale(${scale})` : "translateZ(0)";
+}
 
 /** 只负责「播」：hls.js + video 元素，控制条由外层渲染。 */
 const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
@@ -176,6 +184,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     rate: (r: number) => { const v = videoRef.current; if (v) v.playbackRate = r; },
     mute: (m: boolean) => { const v = videoRef.current; if (v) v.muted = m; },
     volume: (vol: number) => { const v = videoRef.current; if (v) v.volume = vol; },
+    setTransform: (s, x, y, gesturing) => {
+      const v = videoRef.current;
+      if (v) applyVideoTransform(v, s, x, y, gesturing);
+    },
     reload: () => {
       const v = videoRef.current;
       if (!v) return;
@@ -205,6 +217,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     recoverCountRef.current = 0;
     lastSizeRef.current = { w: 0, h: 0 };
     lastBufferedRef.current = -1;
+    applyVideoTransform(video, 1, 0, 0, false);
     seekCleanupRef.current?.();
     seekCleanupRef.current = null;
     if (recoverTimerRef.current) {
@@ -217,7 +230,8 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     const url = proxied ? src : mediaUrl(src);
     const useHls = !url.includes("/seg?u=");
     const isIos = platform === "ios";
-    trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay, resource: mediaResource(src) });
+    const mobileBuffer = isMobile;
+    let disposed = false;
 
     /* 换源时先把音量/倍速套回去：hls 重新 attach 后浏览器会把它们重置成默认值 */
     const applySettings = () => {
@@ -229,8 +243,21 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     };
     applySettings();
 
-    if (useHls && Hls.isSupported()) {
-      const hls = new Hls({
+    const attachNative = () => {
+      if (disposed || videoRef.current !== video) return;
+      trace("source.load", { engine: "native", auto_play: autoPlay, resource: mediaResource(src) });
+      video.src = url;
+      if (autoPlay) activity.play("native_autoplay", true);
+    };
+
+    const attachHls = (HlsLib: HlsCtor) => {
+      if (disposed || videoRef.current !== video) return;
+      if (!HlsLib.isSupported()) {
+        attachNative();
+        return;
+      }
+      trace("source.load", { engine: "hls.js", auto_play: autoPlay, resource: mediaResource(src) });
+      const hls = new HlsLib({
         // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
         interstitialsController: undefined,
         contentSteeringController: undefined,
@@ -241,10 +268,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         preferManagedMediaSource: false,
         autoStartLoad: false,
         lowLatencyMode: false,
-        maxBufferLength: isIos ? 12 : 30,
-        maxMaxBufferLength: isIos ? 20 : 60,
-        maxBufferSize: isIos ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
-        backBufferLength: isIos ? 6 : 30,
+        maxBufferLength: mobileBuffer ? 12 : 30,
+        maxMaxBufferLength: mobileBuffer ? 20 : 60,
+        maxBufferSize: mobileBuffer ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
+        backBufferLength: mobileBuffer ? 6 : 30,
         maxBufferHole: 0.5,
         highBufferWatchdogPeriod: 2,
         nudgeOffset: 0.25,
@@ -256,28 +283,28 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         fragLoadingTimeOut: 25000,
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 400,
-        startFragPrefetch: !isIos,
+        startFragPrefetch: !mobileBuffer,
       });
       hlsRef.current = hls;
-      observeHls(hls, trace);
+      observeHls(hls, trace, HlsLib);
       hls.loadSource(url);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(HlsLib.Events.MANIFEST_PARSED, () => {
         if (activity.isActive()) hls.startLoad();
         if (autoPlay) activity.play("manifest_autoplay", true);
       });
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      hls.on(HlsLib.Events.FRAG_BUFFERED, () => {
         recoverCountRef.current = 0;
         setReady(true);
         if (videoRef.current) reportBuffered(videoRef.current);
       });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
+      hls.on(HlsLib.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
 
         if (!activity.isActive()) return;
 
         // 致命错误：优先自动重连/恢复解码器，最多静默恢复 4 次；耗尽后停止重试，交由外层报错/手动重载。
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR) {
           if (recoverCountRef.current < 4) {
             recoverCountRef.current += 1;
             const delay = 250 * recoverCountRef.current;
@@ -293,7 +320,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
           }
           try { hls.stopLoad(); } catch { /* ignore */ }
           onError?.(`${data.type}/${data.details}`);
-        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        } else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) {
           if (recoverCountRef.current < 4) {
             recoverCountRef.current += 1;
             try {
@@ -311,12 +338,18 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
           hlsRef.current = null;
         }
       });
+    };
+
+    if (!useHls) {
+      attachNative();
     } else {
-      video.src = url;
-      if (autoPlay) activity.play("native_autoplay", true);
+      const loaded = getLoadedHls();
+      if (loaded) attachHls(loaded);
+      else void loadHls().then(attachHls).catch(() => attachNative());
     }
 
     return () => {
+      disposed = true;
       trace("source.cleanup");
       seekCleanupRef.current?.();
       seekCleanupRef.current = null;
@@ -360,7 +393,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
-  const hasTransform = scale !== 1 || panX !== 0 || panY !== 0;
+  useLayoutEffect(() => {
+    const v = videoRef.current;
+    if (v) applyVideoTransform(v, scale, panX, panY, isGesturing);
+  }, [scale, panX, panY, isGesturing]);
 
   return (
     <div className={`relative w-full h-full bg-black overflow-hidden ${className}`}>
@@ -382,9 +418,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         className={`w-full h-full bg-black ${fit === "cover" ? "object-cover" : "object-contain"}`}
         style={{
           opacity: ready ? 1 : 0,
-          transform: hasTransform ? `translate3d(${panX}px, ${panY}px, 0) scale(${scale})` : "translateZ(0)",
           transformOrigin: "center center",
-          transition: isGesturing ? "opacity .25s" : "opacity .25s, transform .2s cubic-bezier(.2,0,0,1)",
         }}
         onLoadedData={(e) => {
           const v = e.target as HTMLVideoElement;

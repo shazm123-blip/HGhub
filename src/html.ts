@@ -1,19 +1,8 @@
 import { getApiBase, LOCAL } from "./api";
 import DOMPurify from "dompurify";
+import { isStrictSecurity, setStrictSecurity } from "./security";
 
-// 启动前默认严格；有效状态只由 Rust app_boot / security_set 返回值更新。
-let strictSecurity = true;
-
-/** 当前是否启用严格安全模式（默认开启）。 */
-export function isStrictSecurity(): boolean {
-  return strictSecurity;
-}
-
-/** 切换严格安全模式（关闭后回退为兼容清洗与链接策略）。 */
-export function setStrictSecurity(strict: boolean): void {
-  strictSecurity = strict;
-
-}
+export { isStrictSecurity, setStrictSecurity };
 
 function isInternalWebviewHost(host: string): boolean {
   const h = host.replace(/\.+$/, "").toLowerCase();
@@ -58,7 +47,7 @@ function isPrivateOrLocalHost(host: string): boolean {
 }
 
 /** 把各种写法的图片地址补成绝对地址；占位符（data:）返回空串 */
-function abs(raw: string, strict = strictSecurity): string {
+function abs(raw: string, strict = isStrictSecurity()): string {
   const s = (raw || "").trim();
   if (!s) return "";
   try {
@@ -70,12 +59,10 @@ function abs(raw: string, strict = strictSecurity): string {
   } catch { return ""; }
 }
 
-/** 把正文里的图片换成走本地协议（带 Referer / 解密能力） */
-function proxyImages(html: string, strict = strictSecurity): string {
-  if (!html) return "";
-  const doc = new DOMParser().parseFromString(html, "text/html");
+/** 在单次 DOMPurify 生成的 DocumentFragment 上改写图片与链接，避免多轮完整 HTML 解析与序列化 */
+function rewriteFragment(fragment: DocumentFragment, strict = isStrictSecurity()): string {
   const imgPrefix = `${LOCAL}/img?u=`;
-  doc.querySelectorAll("img").forEach((img) => {
+  fragment.querySelectorAll("img").forEach((img) => {
     // 懒加载图：真实地址常在 data-* 上，src 只是占位
     const candidate =
       img.getAttribute("data-src") ||
@@ -101,16 +88,22 @@ function proxyImages(html: string, strict = strictSecurity): string {
     img.setAttribute("loading", "lazy");
   });
   // 正文链接补全，避免点开指向本地
-  doc.querySelectorAll("a[href]").forEach((a) => {
+  fragment.querySelectorAll("a[href]").forEach((a) => {
     const href = (a.getAttribute("href") || "").trim();
     const full = abs(href, strict);
     if (full) {
       a.setAttribute("href", full);
       a.setAttribute("target", "_blank");
       a.setAttribute("rel", "noopener noreferrer");
-    } else a.removeAttribute("href");
+    } else {
+      a.removeAttribute("href");
+      a.removeAttribute("target");
+      a.removeAttribute("rel");
+    }
   });
-  return doc.body.innerHTML;
+  const container = document.createElement("div");
+  container.appendChild(fragment);
+  return container.innerHTML;
 }
 
 const STRICT_TAGS = [
@@ -122,47 +115,33 @@ const STRICT_INPUT_ATTR = [
   "href", "src", "alt", "title", "colspan", "rowspan", "start",
   "data-src", "data-original", "data-lazy-src",
 ];
-const STRICT_FINAL_ATTR = [
-  "href", "src", "alt", "title", "colspan", "rowspan", "start", "target", "rel", "loading",
-];
-// 保留 DOMPurify 的安全 URL/普通属性值规则，并允许本应用的 macOS 图片协议。
+// 保留 DOMPurify 的安全 URL/普通属性值规则，并允许本应用的图片协议。
 const SAFE_FINAL_URI = /^(?:(?:https?|ftp|ftps|tel|mailto|callto|sms|cid|xmpp|matrix):|hg:\/\/localhost\/|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 
 /** 正文只接受所需 HTML 排版，不允许 SVG/MathML、事件、样式和可执行 URL。 */
 export function sanitizeHtml(html: string): string {
   // 不支持清洗器的旧 WebView 必须拒绝正文，不能回退为原样渲染。
   if (!html || !DOMPurify.isSupported) return "";
-  if (!strictSecurity) {
-    const pre = DOMPurify.sanitize(html, {
+  const strict = isStrictSecurity();
+  if (!strict) {
+    const fragment = DOMPurify.sanitize(html, {
       USE_PROFILES: { html: true },
       ADD_ATTR: ["data-src", "data-original", "data-lazy-src"],
       ALLOWED_URI_REGEXP: SAFE_FINAL_URI,
+      RETURN_DOM_FRAGMENT: true,
     });
-    const rewritten = proxyImages(pre, false);
-    return DOMPurify.sanitize(rewritten, {
-      USE_PROFILES: { html: true },
-      ADD_ATTR: ["target", "rel", "loading"],
-      ALLOWED_URI_REGEXP: SAFE_FINAL_URI,
-    });
+    return rewriteFragment(fragment, false);
   }
-  const clean = DOMPurify.sanitize(html, {
+  const fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: STRICT_TAGS,
     ALLOWED_ATTR: STRICT_INPUT_ATTR,
     ALLOWED_URI_REGEXP: SAFE_FINAL_URI,
     ALLOW_DATA_ATTR: false,
     ALLOW_ARIA_ATTR: false,
     FORBID_TAGS: ["svg", "math"],
+    RETURN_DOM_FRAGMENT: true,
   });
-  const rewritten = proxyImages(clean, true);
-  // DOMPurify 作为进入 dangerouslySetInnerHTML 前的最后一步，避免二次解析引入差异。
-  return DOMPurify.sanitize(rewritten, {
-    ALLOWED_TAGS: STRICT_TAGS,
-    ALLOWED_ATTR: STRICT_FINAL_ATTR,
-    ALLOW_DATA_ATTR: false,
-    ALLOW_ARIA_ATTR: false,
-    FORBID_TAGS: ["svg", "math"],
-    ALLOWED_URI_REGEXP: SAFE_FINAL_URI,
-  });
+  return rewriteFragment(fragment, true);
 }
 
 /** 拦截正文内链接点击，防止 WebView 原地跳转或弹出无守卫新窗口 */
@@ -174,6 +153,6 @@ export function handleArticleClick(
   if (!el) return;
   e.preventDefault();
   e.stopPropagation();
-  const href = abs(el.getAttribute("href") || "", strictSecurity);
+  const href = abs(el.getAttribute("href") || "", isStrictSecurity());
   if (href && onOpenUrl) onOpenUrl(href);
 }

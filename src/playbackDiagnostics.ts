@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
-import Hls from "hls.js";
+import type Hls from "hls.js";
 import type { FragBufferedData, FragLoadedData, FragLoadingData } from "hls.js";
+import { getLoadedHls } from "./hlsLoader";
 
 type Data = Record<string, unknown>;
 type Status = { enabled: boolean; path: string | null; error: string | null };
@@ -55,7 +56,7 @@ export async function flushPlaybackLog() {
 export function initPlaybackLog() {
   return init ??= playbackLogApi.status().then(saved => {
     publish({ ...saved, ready: true });
-    tracePlayback("app.start", { version: __APP_VERSION__, platform: navigator.platform, user_agent: navigator.userAgent, hls_version: Hls.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
+    tracePlayback("app.start", { version: __APP_VERSION__, platform: navigator.platform, user_agent: navigator.userAgent, hls_version: getLoadedHls()?.version ?? "lazy", media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
   }).catch(() => { init = undefined; publish({ error: "无法读取诊断日志设置" }); });
 }
 
@@ -66,7 +67,7 @@ export async function setPlaybackLog(on: boolean) {
     await flushPlaybackLog();
     const saved = await playbackLogApi.set(on);
     publish({ ...saved, pending: false });
-    tracePlayback("app.snapshot", { version: __APP_VERSION__, platform: navigator.platform, user_agent: navigator.userAgent, hls_version: Hls.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
+    tracePlayback("app.snapshot", { version: __APP_VERSION__, platform: navigator.platform, user_agent: navigator.userAgent, hls_version: getLoadedHls()?.version ?? "lazy", media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
   } finally { if (state.pending) publish({ pending: false }); }
 }
 
@@ -211,8 +212,9 @@ export function usePlayerDiagnostics(videoRef: RefObject<HTMLVideoElement | null
   return { trace, requestSeek };
 }
 
-export function observeHls(hls: Hls, trace: (event: string, data?: Data) => void) {
-  hls.on(Hls.Events.MEDIA_ATTACHED, (_event, data) => {
+export function observeHls(hls: Hls, trace: (event: string, data?: Data) => void, HlsCtor?: typeof Hls) {
+  const Events = (HlsCtor ?? (hls.constructor as typeof Hls)).Events;
+  hls.on(Events.MEDIA_ATTACHED, (_event, data) => {
     const source = data.mediaSource;
     engines.set(hls, source?.constructor.name || "MediaSource");
     trace("hls.attached", { engine: engines.get(hls), prefer_managed: hls.config.preferManagedMediaSource });
@@ -221,11 +223,11 @@ export function observeHls(hls: Hls, trace: (event: string, data?: Data) => void
       const end = () => trace("mms.endstreaming");
       source.addEventListener("startstreaming", start);
       source.addEventListener("endstreaming", end);
-      hls.once(Hls.Events.DESTROYING, () => { source.removeEventListener("startstreaming", start); source.removeEventListener("endstreaming", end); });
+      hls.once(Events.DESTROYING, () => { source.removeEventListener("startstreaming", start); source.removeEventListener("endstreaming", end); });
     }
   });
-  hls.on(Hls.Events.MANIFEST_PARSED, () => trace("hls.manifest", { levels: hls.levels.length }));
-  for (const event of [Hls.Events.FRAG_LOADING, Hls.Events.FRAG_LOADED, Hls.Events.FRAG_BUFFERED, Hls.Events.FRAG_LOAD_EMERGENCY_ABORTED] as const) {
+  hls.on(Events.MANIFEST_PARSED, () => trace("hls.manifest", { levels: hls.levels.length }));
+  for (const event of [Events.FRAG_LOADING, Events.FRAG_LOADED, Events.FRAG_BUFFERED, Events.FRAG_LOAD_EMERGENCY_ABORTED] as const) {
     hls.on(event, (_event: string, data: FragLoadingData | FragLoadedData | FragBufferedData) => {
       if (!playbackLogEnabled()) return;
       const { frag } = data;
@@ -235,7 +237,7 @@ export function observeHls(hls: Hls, trace: (event: string, data?: Data) => void
         first_byte_ms: loading.first > 0 && loading.first >= loading.start ? round(loading.first - loading.start) : null });
     });
   }
-  hls.on(Hls.Events.ERROR, (_event, data) => trace("hls.error", { type: data.type, detail: data.details, fatal: data.fatal, status: data.response?.code,
+  hls.on(Events.ERROR, (_event, data) => trace("hls.error", { type: data.type, detail: data.details, fatal: data.fatal, status: data.response?.code,
     fragment: data.frag?.sn, resource: data.frag ? mediaResource(data.frag.url) : undefined }));
 }
 

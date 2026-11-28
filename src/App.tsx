@@ -1,29 +1,33 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useStore, type Page, type Tab } from "./store";
-import { isMobile, selfTest } from "./api";
+import { Suspense, lazy, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavState, useStoreActions, useThemeState, useUiState, type Page, type Tab } from "./store";
+import { api, isMobile, selfTest } from "./api";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
-import { hasBackHandler, isPlaybackLocked, runBack } from "./back";
+import { consumeImmediatePop, hasBackHandler, isPlaybackLocked, runBack } from "./back";
 import IosBackEdge from "./components/IosBackEdge";
 import { IClose, IGrid, IGridF, IHome, IHomeF, IKeyboard, ISearch, IUser, IUserF } from "./icons";
 import Home from "./pages/Home";
-import Search, { RankPage } from "./pages/Search";
-import Category, { ChannelPage } from "./pages/Category";
-import Profile from "./pages/Profile";
 import Feed from "./components/Feed";
-import LoginModal from "./components/LoginModal";
-import LinePicker from "./components/LinePicker";
 import { Modal, ToastHost } from "./components/ui";
 import { DesktopRail, DesktopTitleBar, MacToolbar } from "./components/DesktopChrome";
 import ResizeHandles from "./components/ResizeHandles";
 import { tracePlayback } from "./playbackDiagnostics";
 
+const LoginModal = lazy(() => import("./components/LoginModal"));
+const LinePicker = lazy(() => import("./components/LinePicker"));
+const Search = lazy(() => import("./pages/Search"));
+const RankPage = lazy(() => import("./pages/Search").then((m) => ({ default: m.RankPage })));
+const Category = lazy(() => import("./pages/Category"));
+const ChannelPage = lazy(() => import("./pages/Category").then((m) => ({ default: m.ChannelPage })));
+const Profile = lazy(() => import("./pages/Profile"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const PostsPage = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostsPage })));
 const PostDetail = lazy(() => import("./pages/Posts").then((m) => ({ default: m.PostDetail })));
 
 /* ============ 底部标签栏（Android）—— 细瘦纯文字、低侵入 ============ */
 function TabBar() {
-  const { tab, setTab, stack, bumpHomeRefresh, theme, platform } = useStore();
+  const { platform, setTab, bumpHomeRefresh } = useStoreActions();
+  const { tab, stack } = useNavState();
+  const { theme } = useThemeState();
   const pickTab = (k: Tab) => {
     if (k === "home" && tab === "home" && stack.length === 0) bumpHomeRefresh();
     else setTab(k);
@@ -102,9 +106,48 @@ function StackPage({ page, onBack, wide, top, bottomInset }: {
 
 /* ============ 统一主视口（桌面 / 移动共用） ============ */
 function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boolean }) {
-  const { platform, tab, setTab, stack, pop, loginOpen, setLoginOpen, linePickerOpen, shortcutsOpen, setShortcutsOpen, fs } = useStore();
+  const { platform, setTab, pop, setLoginOpen, setShortcutsOpen } = useStoreActions();
+  const { tab, stack } = useNavState();
+  const { loginOpen, linePickerOpen, shortcutsOpen, fs } = useUiState();
   const mainRef = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(!isMobile);
+  const [visitedTabs, setVisitedTabs] = useState<Record<Tab, boolean>>(() => ({
+    home: true, search: tab === "search", category: tab === "category", profile: tab === "profile",
+  }));
+  useEffect(() => {
+    setVisitedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
+  }, [tab]);
+
+  const prevStackRef = useRef<Page[]>(stack);
+  const [exitingPage, setExitingPage] = useState<Page | null>(null);
+  const exitTimerRef = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const prev = prevStackRef.current;
+    prevStackRef.current = stack;
+    const immediate = consumeImmediatePop();
+    if (stack.length < prev.length) {
+      const popped = prev[prev.length - 1];
+      const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      const singlePop = stack.length === prev.length - 1 && stack.every((p, idx) => p.key === prev[idx]?.key);
+      if (popped && singlePop && !immediate && !reduceMotion) {
+        window.clearTimeout(exitTimerRef.current);
+        setExitingPage(popped);
+        exitTimerRef.current = window.setTimeout(() => {
+          exitTimerRef.current = undefined;
+          setExitingPage(null);
+        }, 210);
+      } else {
+        window.clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = undefined;
+        setExitingPage(null);
+      }
+    } else if (stack.length > prev.length) {
+      window.clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = undefined;
+      setExitingPage(null);
+    }
+  }, [stack]);
+  useEffect(() => () => window.clearTimeout(exitTimerRef.current), []);
 
   useLayoutEffect(() => {
     const el = mainRef.current;
@@ -133,7 +176,14 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
       }
       if (loginOpen || linePickerOpen || shortcutsOpen || hasBackHandler()) return;
       if (e.key === "?" && !isMobile) { e.preventDefault(); setShortcutsOpen(true); return; }
-      if (e.key === "/") { e.preventDefault(); setTab("search"); return; }
+      if (e.key === "/") {
+        e.preventDefault();
+        setTab("search");
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLInputElement>('[data-tab]:not(.invisible) input[type="search"]')?.focus();
+        });
+        return;
+      }
       if (["1", "2", "3", "4"].includes(e.key) && !e.repeat) {
         setTab((["home", "search", "category", "profile"] as Tab[])[Number(e.key) - 1]);
       }
@@ -149,21 +199,40 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
   /* 栈页（从搜索/分类/我的进入的播放页、图文页）没有底栏，底部只让出安全区。 */
   const stackInset = isMobile ? 0 : 14;
 
+  const tabFallback = <div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>;
+
   return (
     <div className={`absolute inset-0 flex bg-canvas plat-${platform}`}>
       {!isMobile && platform !== "macos" && !theater && <DesktopRail collapsed={collapsed} />}
       <div ref={mainRef} className={`relative flex-1 min-w-0 overflow-hidden win-main ${!isMobile && theater ? "is-theater-main" : ""}`}>
         <div data-tab className={vis("home")}><Home active={pageActive && tab === "home"} bottomInset={bottomInset} /></div>
-        <div data-tab className={vis("search")}><Search active={pageActive && tab === "search"} wide={wide} /></div>
-        <div data-tab className={vis("category")}><Category wide={wide} active={pageActive && tab === "category"} /></div>
-        <div data-tab className={vis("profile")}><Profile wide={wide} active={pageActive && tab === "profile"} /></div>
+        <div data-tab className={vis("search")}>
+          {(visitedTabs.search || tab === "search") && (
+            <Suspense fallback={tabFallback}><Search active={pageActive && tab === "search"} wide={wide} /></Suspense>
+          )}
+        </div>
+        <div data-tab className={vis("category")}>
+          {(visitedTabs.category || tab === "category") && (
+            <Suspense fallback={tabFallback}><Category wide={wide} active={pageActive && tab === "category"} /></Suspense>
+          )}
+        </div>
+        <div data-tab className={vis("profile")}>
+          {(visitedTabs.profile || tab === "profile") && (
+            <Suspense fallback={tabFallback}><Profile wide={wide} active={pageActive && tab === "profile"} /></Suspense>
+          )}
+        </div>
 
-        {stack.map((p, i) => (
-          <div data-stack key={p.key} className={`absolute inset-0 z-30 bg-bg ${isMobile ? "a-page-in" : "win-page-in"}`} style={{ boxShadow: "-18px 0 40px rgba(0,0,0,.5)" }}>
-            <Suspense fallback={<div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>}>
-              <StackPage page={p} onBack={pop} wide={wide} top={i === stack.length - 1 && !modalBlocking} bottomInset={stackInset} />
+        {[...stack.map((page, i) => ({ page, exiting: false, isTop: i === stack.length - 1 })), ...(exitingPage && !stack.some((p) => p.key === exitingPage.key) ? [{ page: exitingPage, exiting: true, isTop: false }] : [])].map(({ page: p, exiting, isTop }) => (
+          <div
+            key={p.key}
+            data-stack={exiting ? undefined : ""}
+            data-stack-exiting={exiting ? "" : undefined}
+            className={`absolute inset-0 z-30 bg-bg ${exiting ? `pointer-events-none ${isMobile ? "a-page-out" : "win-page-out"}` : (isMobile ? "a-page-in" : "win-page-in")}`}
+            style={{ boxShadow: "var(--p-stack-shadow)" }}>
+            <Suspense fallback={exiting ? null : <div className="absolute inset-0 bg-bg flex items-center justify-center"><div className="w-8 h-8 spinner" /></div>}>
+              <StackPage page={p} onBack={exiting ? () => {} : pop} wide={wide} top={!exiting && isTop && !modalBlocking} bottomInset={stackInset} />
             </Suspense>
-            {platform === "ios" && i === stack.length - 1 && !modalBlocking && !fs && <IosBackEdge onBack={pop} />}
+            {!exiting && platform === "ios" && isTop && !modalBlocking && !fs && <IosBackEdge onBack={pop} />}
           </div>
         ))}
 
@@ -174,9 +243,10 @@ function MainViewport({ collapsed, theater }: { collapsed: boolean; theater: boo
 }
 
 /* ============ 桌面窗口壳（Windows / macOS / Linux）============ */
-function DesktopShell() {
+const DesktopShell = memo(function DesktopShell() {
   const [collapsed, setCollapsed] = useState(false);
-  const { theater, platform } = useStore();
+  const { platform } = useStoreActions();
+  const { theater } = useUiState();
   if (platform === "macos") return (
     <div className="absolute inset-0 flex mac-window">
       {!theater && <DesktopRail collapsed={collapsed} />}
@@ -196,11 +266,12 @@ function DesktopShell() {
       {(platform === "windows" || platform === "linux") && <ResizeHandles />}
     </div>
   );
-}
+});
 
 /* ============ 移动端（无壳） ============ */
-function MobileShell() {
-  const { platform, fs } = useStore();
+const MobileShell = memo(function MobileShell() {
+  const { platform } = useStoreActions();
+  const { fs } = useUiState();
   return (
     <div className={`fixed inset-0 flex flex-col bg-canvas plat-${platform}`}
       style={fs ? undefined : { paddingLeft: "var(--sal, 0px)", paddingRight: "var(--sar, 0px)" }}>
@@ -209,17 +280,19 @@ function MobileShell() {
       </div>
     </div>
   );
-}
+});
 
 /* ============ 快捷键速查弹窗 ============ */
 function ShortcutsModal() {
-  const { shortcutsOpen, setShortcutsOpen, platform } = useStore();
+  const { platform, setShortcutsOpen } = useStoreActions();
+  const { shortcutsOpen } = useUiState();
   const rows: [string, string][] = [
     ["Space", "播放 / 暂停"],
     ["↑ / ↓", "上一个 / 下一个视频"],
     ["← / →", "快退 / 快进 5 秒"],
+    ["[ / ]", "减速 / 加速播放"],
     ["N / P", "下一集 / 上一集"],
-    ["F / Esc", "进入 / 退出全屏"],
+    ["F / 双击 / Esc", "进入 / 退出全屏"],
     ["T", "影院模式"],
     ["M", "静音切换"],
     ["L / S", "喜欢 / 收藏"],
@@ -252,13 +325,55 @@ function ShortcutsModal() {
   );
 }
 
-/* ============ 入口 ============ */
-export default function App() {
-  const { platform, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, tab, setTab, stack, pop, fs, setFs, toast } = useStore();
+/* ============ 懒加载全局弹层（未打开前不加载 chunk） ============ */
+function GlobalModals() {
+  const { setLinePickerOpen } = useStoreActions();
+  const { loginOpen, linePickerOpen } = useUiState();
+  const [loginLoaded, setLoginLoaded] = useState(loginOpen);
+  const [lineLoaded, setLineLoaded] = useState(linePickerOpen);
+  useEffect(() => { if (loginOpen) setLoginLoaded(true); }, [loginOpen]);
+  useEffect(() => { if (linePickerOpen) setLineLoaded(true); }, [linePickerOpen]);
+  return (
+    <>
+      {loginLoaded && <Suspense fallback={null}><LoginModal /></Suspense>}
+      {lineLoaded && <Suspense fallback={null}><LinePicker open={linePickerOpen} onClose={() => setLinePickerOpen(false)} /></Suspense>}
+      <ShortcutsModal />
+    </>
+  );
+}
+
+/* ============ 独立副作用桥（不触发外壳与页面重渲染） ============ */
+function AppEffects() {
+  const { platform, setLoginOpen, setLinePickerOpen, setShortcutsOpen, setTab, pop, setFs, toast } = useStoreActions();
+  const { tab, stack } = useNavState();
+  const { loginOpen, linePickerOpen, shortcutsOpen, fs } = useUiState();
   const lastBackExitRef = useRef(0);
+
   useEffect(() => {
     tracePlayback("navigation.change", { tab, stack: stack.map(p => ({ page: p.kind, key: p.key })), login_open: loginOpen });
   }, [tab, stack, loginOpen]);
+
+  /* 移动端切到后台 8 秒后裁剪 Rust 内存媒体缓存（释放分片，保留磁盘封面），降低 iOS/Android 后台被杀风险 */
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    let trimTimer: number | undefined;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        window.clearTimeout(trimTimer);
+        trimTimer = window.setTimeout(() => {
+          if (document.visibilityState === "hidden") void api.trimMemoryCache();
+        }, 8000);
+      } else {
+        window.clearTimeout(trimTimer);
+        trimTimer = undefined;
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearTimeout(trimTimer);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   /* —— 安卓硬件返回键 ——
      层级：播放锁拦截 → 全屏 → 面板/弹层 → 线路/登录框 → 页面栈 → 回首页 → 双击退出应用。
@@ -316,12 +431,69 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, []);
 
+  return null;
+}
+
+/* ============ 全局网络状态提示条 ============ */
+function OfflineBanner() {
+  const { setLinePickerOpen } = useStoreActions();
+  const [offline, setOffline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine === false : false));
+  const [restored, setRestored] = useState(false);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const onOffline = () => {
+      window.clearTimeout(timer);
+      setRestored(false);
+      setOffline(true);
+    };
+    const onOnline = () => {
+      setOffline(false);
+      setRestored(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setRestored(false), 2600);
+    };
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
+
+  if (!offline && !restored) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-x-0 z-[85] flex justify-center pointer-events-none px-4"
+      style={{ top: isMobile ? "calc(var(--sat, 0px) + 8px)" : 52 }}>
+      <div className={`pointer-events-auto a-toast flex items-center gap-2.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium elev-3 ${offline ? "bg-danger text-on-danger" : "bg-s4/95 text-on backdrop-blur-md"}`}>
+        <span className={`w-2 h-2 rounded-full ${offline ? "bg-current opacity-85" : "bg-mint"}`} />
+        <span>{offline ? "当前网络已断开，已进入离线状态" : "网络已恢复连接"}</span>
+        {offline && (
+          <button
+            type="button"
+            onClick={() => setLinePickerOpen(true)}
+            className="ml-1 px-2 py-0.5 rounded-full bg-black/20 text-[11px] font-semibold pressable">
+            线路
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============ 入口 ============ */
+export default function App() {
+  const { platform } = useStoreActions();
   return (
     <div className={`fixed inset-0 plat-${platform}`}>
+      <AppEffects />
       {isMobile ? <MobileShell /> : <DesktopShell />}
-      <LoginModal />
-      <LinePicker open={linePickerOpen} onClose={() => setLinePickerOpen(false)} />
-      <ShortcutsModal />
+      <GlobalModals />
+      <OfflineBanner />
       <ToastHost />
     </div>
   );

@@ -4,6 +4,17 @@ type Handler = () => boolean;
 const stack: Handler[] = [];
 let legacyHandler: Handler | null = null;
 let playbackLocks = 0;
+let immediatePopPending = false;
+
+export function markNextPopImmediate() {
+  immediatePopPending = true;
+}
+
+export function consumeImmediatePop(): boolean {
+  if (!immediatePopPending) return false;
+  immediatePopPending = false;
+  return true;
+}
 
 export function pushBackHandler(h: Handler): () => void {
   stack.push(h);

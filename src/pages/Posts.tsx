@@ -2,8 +2,8 @@ import IosNavigation from "../components/IosNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, isIos, isMacos, cover, fmt, isMobile } from "../api";
 import type { Comment, Post } from "../types";
-import { useStore } from "../store";
-import { Avatar, Empty, Img } from "../components/ui";
+import { useInteractions, usePlaybackPrefs, useSessionUser, useStoreActions, useUiState } from "../store";
+import { Avatar, CardGridSkeleton, Empty, Img, PostDetailSkeleton, PullToRefresh } from "../components/ui";
 import Player from "../components/Player";
 import { pushBackHandler } from "../back";
 import { IBack, IClose, IComment, IFireF, IHeart, IHeartF, IPlayF, IRefresh, IStar, IStarF } from "../icons";
@@ -11,7 +11,8 @@ import { handleArticleClick, sanitizeHtml } from "../html";
 
 /* ================= 吃瓜列表 ================= */
 export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean }) {
-  const { push, lineVersion } = useStore();
+  const { push } = useStoreActions();
+  const { lineVersion } = useUiState();
   const [items, setItems] = useState<Post[]>([]);
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
@@ -123,13 +124,14 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
           </div>
         </div>
       )}
-      <div ref={listRef} className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
+      <PullToRefresh ref={listRef} onRefresh={() => loadMore(true)} refreshing={refreshing}
+        className="flex-1 scroll-y px-3 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {items.length ? (
           <div className={`grid ${wide ? "grid-cols-3 xl:grid-cols-4" : "grid-cols-2"} gap-2`}>
             {items.map((p) => (
               <button key={p.id} onClick={() => push({ kind: "post", id: p.id })}
-                className="cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
-                <Img src={p.cover} />
+                className="cv-card group cover-frame w-full aspect-[4/5] relative rounded-(--r-sm) overflow-hidden bg-s1 elev-1 pressable block text-left">
+                <Img src={p.cover} imgClassName="[@media(hover:hover)]:transition-transform [@media(hover:hover)]:duration-300 [@media(hover:hover)]:ease-out [@media(hover:hover)]:group-hover:scale-[1.04]" />
                 <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-2">
                   <div className="text-[12px] font-medium text-white clamp-2 leading-snug tsh">{p.title}</div>
@@ -141,7 +143,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
             ))}
           </div>
         ) : loading ? (
-          <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+          <CardGridSkeleton wide={wide} aspect="aspect-[4/5]" gap="gap-2" />
         ) : err ? (
           <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore(true)} />
         ) : (
@@ -158,7 +160,7 @@ export function PostsPage({ onBack, wide }: { onBack: () => void; wide: boolean 
         {!loading && !err && page >= pages && items.length > 0 && (
           <div className="text-center text-[11px] text-dim py-3">— 已经到底啦 —</div>
         )}
-      </div>
+      </PullToRefresh>
     </div>
   );
 }
@@ -176,7 +178,11 @@ function validPostCounts(raw: Post["counts"]): NonNullable<Post["counts"]> {
 
 /* ================= 吃瓜详情（网页式浏览） ================= */
 export function PostDetail({ id, onBack, active = true }: { id: number; onBack: () => void; active?: boolean }) {
-  const { toast, strictSecurity, muted, setMuted, volume, user, isLiked, isFav, changeInteraction, setLoginOpen, lineVersion } = useStore();
+  const { toast, changeInteraction, setLoginOpen, searchFor } = useStoreActions();
+  const { strictSecurity, lineVersion } = useUiState();
+  const user = useSessionUser();
+  const { isLiked, isFav } = useInteractions();
+  const { muted, setMuted, volume } = usePlaybackPrefs();
   const [post, setPost] = useState<(Post & { content?: string; video_url?: string }) | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [play, setPlay] = useState(false);
@@ -310,7 +316,7 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
         {err ? (
           <Empty icon={<IFireF size={26} />} title="加载失败" sub={err} action="重试" onAction={() => setReloadTick((n) => n + 1)} />
         ) : !post ? (
-          <div className="flex justify-center py-12"><div className="w-8 h-8 spinner" /></div>
+          <PostDetailSkeleton />
         ) : (
           <div className="max-w-[760px] mx-auto">
             {post.video_url ? (
@@ -349,7 +355,8 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
               {!!post.tags?.length && (
                 <div className="flex flex-wrap gap-1.5 mt-2.5">
                   {post.tags.slice(0, 8).map((t) => (
-                    <span key={t} className="px-2.5 py-0.5 rounded-(--r-ctl) bg-s3 text-[11px] text-on/75">#{t}</span>
+                    <button key={t} type="button" onClick={() => searchFor(t)}
+                      className="px-2.5 py-0.5 rounded-(--r-ctl) bg-s3 text-[11px] text-on/80 hover:text-primary pressable">#{t}</button>
                   ))}
                 </div>
               )}
@@ -446,7 +453,7 @@ export function PostDetail({ id, onBack, active = true }: { id: number; onBack: 
             style={{ top: "calc(var(--sat, 0px) + 12px)" }}>
             <IClose size={18} />
           </button>
-          <img src={lightboxUrl} alt="" onClick={(e) => e.stopPropagation()}
+          <img src={lightboxUrl} alt="" decoding="async" onClick={(e) => e.stopPropagation()}
             className="max-w-full max-h-[86dvh] object-contain rounded-lg select-none" />
         </div>
       )}

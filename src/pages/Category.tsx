@@ -1,10 +1,10 @@
 import IosNavigation from "../components/IosNavigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, isIos, isMacos, fmt } from "../api";
 import type { Post, VideoCard } from "../types";
-import { useStore } from "../store";
+import { useStoreActions, useUiState } from "../store";
 import { Masonry, RowCard } from "../components/cards";
-import { Empty, Img } from "../components/ui";
+import { CardGridSkeleton, Empty, Img, PullToRefresh, RowCardsSkeleton, SegmentedControl } from "../components/ui";
 import { IBack, IChevR, IClapper, IFileText, IGrid, IRefresh, ISparkF, IStarsF, ITrophy } from "../icons";
 
 export const CHANNELS = [
@@ -69,7 +69,8 @@ function HorizontalRow({ wide, children }: { wide: boolean; children: ReactNode 
 
 /* ================= 分类总览 ================= */
 export default function Category({ wide, active }: { wide: boolean; active: boolean }) {
-  const { push, lineVersion } = useStore();
+  const { push } = useStoreActions();
+  const { lineVersion } = useUiState();
   const [rows, setRows] = useState<Record<string, VideoCard[]>>({});
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -160,7 +161,7 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
         </button>
       </div>
       )}
-      <div className="flex-1 scroll-y pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
+      <PullToRefresh onRefresh={refreshAll} refreshing={refreshing} className="flex-1 scroll-y pt-2" style={{ paddingBottom: "calc(var(--sab, 0px) + 64px)" }}>
         {/* 排行榜入口 */}
         <button onClick={() => push({ kind: "ranks" })}
           className="mx-4 mb-5 w-[calc(100%-2rem)] flex items-center gap-3 rounded-(--r-md) bg-s2 p-3.5 text-left pressable elev-1">
@@ -172,39 +173,19 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
           <IChevR size={16} className="shrink-0 text-mut" />
         </button>
 
-        {CHANNELS.map((c, ci) => {
-          const list = rows[c.cate] || [];
-          const rowCovers = Object.fromEntries(list.map((x) => [x.id, x.cover]));
-          return (
-            <section key={c.cate} aria-label={c.name} className="mb-5 a-rise" style={{ animationDelay: `${Math.min(ci * 50, 300)}ms` }}>
-              <button onClick={() => push({ kind: "channel", cate: c.cate, name: c.name })}
-                className="w-full flex items-center gap-2.5 px-4 mb-2.5 text-left pressable group">
-                <span className="w-[36px] h-[36px] rounded-(--r-sm) tonal flex items-center justify-center shrink-0 text-primary">
-                  {CHANNEL_ICON[c.cate] || <IGrid size={19} strokeWidth={1.9} />}
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block text-[15.5px] font-semibold text-on leading-tight">{c.name}</span>
-                  <span className="block text-[11px] text-mut mt-0.5 truncate">{c.desc}</span>
-                </span>
-                <span className="shrink-0 flex items-center gap-0.5 text-[12px] text-mut group-hover:text-primary transition-colors">
-                  全部<IChevR size={14} />
-                </span>
-              </button>
-              <HorizontalRow wide={wide}>
-                {list.map((v) => (
-                  <RowCard key={v.id} v={v} onOpen={() => push({
-                    kind: "feed",
-                    videoIds: list.map((x) => x.id),
-                    index: list.findIndex((x) => x.id === v.id),
-                    title: c.name,
-                    covers: rowCovers,
-                  })} />
-                ))}
-                {!list.length && <PreviewStatus name={c.name} loading={loading[c.cate] !== false} error={errors[c.cate]} onRetry={() => void loadPreview(c.cate)} />}
-              </HorizontalRow>
-            </section>
-          );
-        })}
+        {CHANNELS.map((c, ci) => (
+          <ChannelPreviewSection
+            key={c.cate}
+            channel={c}
+            ci={ci}
+            list={rows[c.cate]}
+            loading={loading[c.cate] !== false}
+            error={errors[c.cate]}
+            wide={wide}
+            push={push}
+            onRetry={loadPreview}
+          />
+        ))}
 
         {/* 吃瓜 */}
         <section aria-label="黄果吃瓜" className="mb-5 a-rise">
@@ -226,7 +207,7 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
               <button key={post.id} onClick={() => push({ kind: "post", id: post.id })}
                 className="row-cover w-[108px] shrink-0 text-left snap-start pressable">
                 <div className="cover-frame relative w-full aspect-[3/4] rounded-(--r-sm) overflow-hidden bg-s1 elev-1">
-                  <Img src={post.cover} eager />
+                  <Img src={post.cover} />
                   <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/75 to-transparent" />
                   <span className="absolute bottom-1.5 right-1.5 text-[10px] font-semibold text-white/90 tsh">{fmt(post.hot)}</span>
                 </div>
@@ -238,21 +219,81 @@ export default function Category({ wide, active }: { wide: boolean; active: bool
         </section>
 
         <div className="px-4 text-center text-[11px] text-dim pt-1">— 已展示全部频道 —</div>
-      </div>
+      </PullToRefresh>
     </div>
   );
 }
 
+const EMPTY_VIDEO_LIST: VideoCard[] = [];
+
+const ChannelPreviewSection = memo(function ChannelPreviewSection({
+  channel, ci, list = EMPTY_VIDEO_LIST, loading, error, wide, push, onRetry,
+}: {
+  channel: (typeof CHANNELS)[number];
+  ci: number;
+  list?: VideoCard[];
+  loading: boolean;
+  error?: string;
+  wide: boolean;
+  push: ReturnType<typeof useStoreActions>["push"];
+  onRetry: (key: string) => Promise<void>;
+}) {
+  const rowIds = useMemo(() => list.map((x) => x.id), [list]);
+  const rowCovers = useMemo(() => Object.fromEntries(list.map((x) => [x.id, x.cover])), [list]);
+  const handleOpen = useCallback((v: VideoCard) => {
+    push({
+      kind: "feed",
+      videoIds: rowIds,
+      index: Math.max(0, rowIds.indexOf(v.id)),
+      title: channel.name,
+      covers: rowCovers,
+    });
+  }, [push, rowIds, rowCovers, channel.name]);
+
+  return (
+    <section aria-label={channel.name} className="mb-5 a-rise" style={{ animationDelay: `${Math.min(ci * 50, 300)}ms` }}>
+      <button onClick={() => push({ kind: "channel", cate: channel.cate, name: channel.name })}
+        className="w-full flex items-center gap-2.5 px-4 mb-2.5 text-left pressable group">
+        <span className="w-[36px] h-[36px] rounded-(--r-sm) tonal flex items-center justify-center shrink-0 text-primary">
+          {CHANNEL_ICON[channel.cate] || <IGrid size={19} strokeWidth={1.9} />}
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-[15.5px] font-semibold text-on leading-tight">{channel.name}</span>
+          <span className="block text-[11px] text-mut mt-0.5 truncate">{channel.desc}</span>
+        </span>
+        <span className="shrink-0 flex items-center gap-0.5 text-[12px] text-mut group-hover:text-primary transition-colors">
+          全部<IChevR size={14} />
+        </span>
+      </button>
+      <HorizontalRow wide={wide}>
+        {list.map((v, vi) => (
+          <RowCard key={v.id} v={v} eager={ci < 2 && vi < 4} onOpen={handleOpen} />
+        ))}
+        {!list.length && <PreviewStatus name={channel.name} loading={loading} error={error} onRetry={() => void onRetry(channel.cate)} />}
+      </HorizontalRow>
+    </section>
+  );
+});
+
 function PreviewStatus({ name, loading, error, onRetry }: { name: string; loading: boolean; error?: string; onRetry: () => void }) {
+  if (loading) {
+    return (
+      <div className="relative">
+        <RowCardsSkeleton count={4} />
+        <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-s1/90 text-[11px] text-mut elev-1">加载中…</span>
+      </div>
+    );
+  }
   return <div className="h-[176px] flex flex-col justify-center items-start gap-2 text-[11.5px] text-dim px-1">
-    <span>{loading ? "加载中…" : error || "暂无内容"}</span>
-    {!loading && error && <button aria-label={`重试${name}`} onClick={onRetry} className="text-primary pressable">重试</button>}
+    <span>{error || "暂无内容"}</span>
+    {error && <button aria-label={`重试${name}`} onClick={onRetry} className="text-primary pressable">重试</button>}
   </div>;
 }
 
 /* ================= 频道详情页 ================= */
 export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: string; onBack: () => void; wide: boolean }) {
-  const { push, lineVersion } = useStore();
+  const { push } = useStoreActions();
+  const { lineVersion } = useUiState();
   const [sort, setSort] = useState<"new" | "hot">("new");
   const [onlyFinished, setOnlyFinished] = useState(false);
   const [items, setItems] = useState<VideoCard[]>([]);
@@ -385,13 +426,13 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
           </div>
         )}
         <div className={isIos ? "flex items-center gap-2 mx-4 my-2.5" : "px-4 pb-3 flex items-center gap-2"}>
-          <div className={isIos ? "segment-control flex flex-1" : "flex gap-2"}>
-            {([["new", "最新"], ["hot", "最热"]] as const).map(([k, label]) => (
-              <button aria-pressed={sort === k} key={k} onClick={() => setSort(k)}
-                className={`${isIos ? "flex-1" : "px-4"} h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${sort === k ? "tonal text-on-sec" : "bg-s3 text-mut"}`}
-                style={sort === k ? { background: "var(--p-sec)", color: "var(--p-primary)" } : undefined}>{label}</button>
-            ))}
-          </div>
+          <SegmentedControl
+            className={isIos ? "flex-1" : "w-[136px]"}
+            ariaLabel="排序方式"
+            value={sort}
+            onChange={setSort}
+            options={[{ value: "new", label: "最新" }, { value: "hot", label: "最热" }]}
+          />
           <button
             type="button"
             aria-pressed={onlyFinished}
@@ -401,7 +442,8 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
           </button>
         </div>
       </div>
-      <div ref={listRef} className="flex-1 scroll-y px-4 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
+      <PullToRefresh ref={listRef} onRefresh={() => loadMore(true)} refreshing={refreshing}
+        className="flex-1 scroll-y px-4 pt-3" style={{ paddingBottom: "calc(var(--sab, 0px) + 24px)" }}>
         {displayed.length ? (
           <Masonry videos={displayed} wide={wide} onOpen={(v) => push({
             kind: "feed",
@@ -421,7 +463,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
         ) : err ? (
           <Empty icon={<IGrid size={26} />} title="加载失败" sub={err} action="重试" onAction={() => void loadMore(true)} />
         ) : loading ? (
-          <div className="flex justify-center py-10"><div className="w-8 h-8 spinner" /></div>
+          <CardGridSkeleton wide={wide} />
         ) : (
           <Empty icon={<IGrid size={26} />} title="暂无内容" sub="稍后再来看看，或点击右上角刷新" action="刷新" onAction={() => void loadMore(true)} />
         )}
@@ -436,7 +478,7 @@ export function ChannelPage({ cate, name, onBack, wide }: { cate: string; name: 
         {!loading && !err && page >= pages && displayed.length > 0 && (
           <div className="text-center text-[11px] text-dim py-3">— 已经到底啦 —</div>
         )}
-      </div>
+      </PullToRefresh>
     </div>
   );
 }

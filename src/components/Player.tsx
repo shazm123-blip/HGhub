@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Hls from "hls.js";
-import { fmtTime, isLocalMedia, isMobile, mediaUrl, platform } from "../api";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type Hls from "hls.js";
+import { fmtTime, friendlyError, isLocalMedia, isMobile, mediaUrl, platform } from "../api";
+import { getLoadedHls, loadHls, type HlsCtor } from "../hlsLoader";
 import { pushBackHandler } from "../back";
+import { usePlaybackPrefs, useStoreActions } from "../store";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 import { useSeekInput } from "../useSeekInput";
@@ -50,21 +52,27 @@ export default function Player({
       setPlaying(false);
     },
   });
+  const { setLinePickerOpen } = useStoreActions();
+  const { playbackRate: rate, setPlaybackRate: setRate } = usePlaybackPrefs();
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [full, setFull] = useState(false);
   const [cssFull, setCssFull] = useState(false);
   const effectiveFull = full || cssFull;
-  const [rate, setRate] = useState(1);
   const [errMsg, setErrMsg] = useState<string>("");
+  const [reloadTick, setReloadTick] = useState(0);
   const [controlsLocked, setControlsLocked] = useState(false);
   const [controlsShown, setControlsShown] = useState(false);
 
-  const showControlsTemporarily = () => {
+  const showControlsTemporarily = useCallback(() => {
     setControlsShown(true);
     if (hideControlsTimerRef.current) window.clearTimeout(hideControlsTimerRef.current);
     hideControlsTimerRef.current = window.setTimeout(() => setControlsShown(false), 3000);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (active) showControlsTemporarily();
+  }, [active, showControlsTemporarily]);
 
   const [scrub, setScrub] = useState<{ pct: number; target: number; delta: number } | null>(null);
   const scrubTargetRef = useRef<number | null>(null);
@@ -111,18 +119,33 @@ export default function Player({
     const url = isLocalMedia(src) ? src : mediaUrl(src);
     const useHls = !url.includes("/seg?u=");
     const isIos = platform === "ios";
+    const mobileBuffer = isMobile;
     recoverCountRef.current = 0;
     lastTimeRef.current = -1;
     setErrMsg("");
-    trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay });
+    let disposed = false;
 
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     video.muted = muted;
     video.volume = volume;
     video.playbackRate = rate;
 
-    if (useHls && Hls.isSupported()) {
-      const hls = new Hls({
+    const attachNative = () => {
+      if (disposed || videoRef.current !== video) return;
+      trace("source.load", { engine: "native", auto_play: autoPlay });
+      // Safari / 部分 WebView 原生支持 HLS 或直连 MP4
+      video.src = url;
+      if (autoPlay) activity.play("native_autoplay", true);
+    };
+
+    const attachHls = (HlsLib: HlsCtor) => {
+      if (disposed || videoRef.current !== video) return;
+      if (!HlsLib.isSupported()) {
+        attachNative();
+        return;
+      }
+      trace("source.load", { engine: "hls.js", auto_play: autoPlay });
+      const hls = new HlsLib({
         // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
         interstitialsController: undefined,
         contentSteeringController: undefined,
@@ -132,11 +155,11 @@ export default function Player({
         preferManagedMediaSource: false,
         autoStartLoad: false,
         lowLatencyMode: false,
-        maxBufferLength: isIos ? 12 : 30,
-        maxMaxBufferLength: isIos ? 20 : 60,
-        maxBufferSize: isIos ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
-        backBufferLength: isIos ? 6 : 30,
-        startFragPrefetch: false,
+        maxBufferLength: mobileBuffer ? 12 : 30,
+        maxMaxBufferLength: mobileBuffer ? 20 : 60,
+        maxBufferSize: mobileBuffer ? 15 * 1000 * 1000 : 60 * 1000 * 1000,
+        backBufferLength: mobileBuffer ? 6 : 30,
+        startFragPrefetch: !mobileBuffer,
         maxBufferHole: 0.5,
         nudgeOffset: 0.25,
         nudgeMaxRetry: 6,
@@ -147,26 +170,26 @@ export default function Player({
         fragLoadingRetryDelay: 400,
       });
       hlsRef.current = hls;
-      observeHls(hls, trace);
+      observeHls(hls, trace, HlsLib);
       hls.loadSource(url);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(HlsLib.Events.MANIFEST_PARSED, () => {
         if (activity.isActive()) hls.startLoad();
         if (autoPlay) activity.play("manifest_autoplay", true);
       });
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      hls.on(HlsLib.Events.FRAG_BUFFERED, () => {
         recoverCountRef.current = 0;
         setErrMsg("");
       });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
+      hls.on(HlsLib.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
         if (!activity.isActive()) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && recoverCountRef.current < 4) {
+        if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR && recoverCountRef.current < 4) {
           recoverCountRef.current += 1;
           try { hls.startLoad(video.currentTime || -1); } catch { /* ignore */ }
           return;
         }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recoverCountRef.current < 4) {
+        if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR && recoverCountRef.current < 4) {
           recoverCountRef.current += 1;
           try {
             hls.recoverMediaError();
@@ -177,20 +200,25 @@ export default function Player({
         const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
         (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
         setErrMsg(detail);
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR || data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR || data.type === HlsLib.ErrorTypes.MEDIA_ERROR) {
           try { hls.stopLoad(); } catch { /* ignore */ }
         } else {
           hls.destroy();
           hlsRef.current = null;
         }
       });
+    };
+
+    if (!useHls) {
+      attachNative();
     } else {
-      // Safari / 部分 WebView 原生支持 HLS 或直连 MP4
-      video.src = url;
-      if (autoPlay) activity.play("native_autoplay", true);
+      const loaded = getLoadedHls();
+      if (loaded) attachHls(loaded);
+      else void loadHls().then(attachHls).catch(() => attachNative());
     }
 
     return () => {
+      disposed = true;
       trace("source.cleanup");
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
       video.pause();
@@ -200,7 +228,12 @@ export default function Player({
         try { video.load(); } catch { /* ignore */ }
       }
     };
-  }, [src, autoPlay]);
+  }, [src, autoPlay, reloadTick]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) video.playbackRate = rate;
+  }, [rate]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -411,7 +444,9 @@ export default function Player({
   const pct = duration > 0 ? (shownTime / duration) * 100 : 0;
 
   return (
-    <div ref={wrapRef} className={cssFull ? "fixed inset-0 z-50 bg-black overflow-hidden group" : `relative bg-black overflow-hidden group ${className}`}>
+    <div ref={wrapRef}
+      onPointerMove={() => { if (!isMobile) showControlsTemporarily(); }}
+      className={cssFull ? "fixed inset-0 z-50 bg-black overflow-hidden group" : `relative bg-black overflow-hidden group ${className}`}>
       <div className="absolute inset-0" inert={controlsLocked}>
       <video
         ref={videoRef}
@@ -454,7 +489,7 @@ export default function Player({
 
       {scrub && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none">
-          <div className="px-4 py-2.5 rounded-2xl backdrop-blur-md flex flex-col items-center" style={{ background: "rgba(0,0,0,.62)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
+          <div className="px-4 py-2.5 rounded-2xl flex flex-col items-center" style={{ background: "rgba(18,18,22,.82)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 8px 24px rgba(0,0,0,.4)" }}>
             <div className="flex items-baseline gap-1.5 tabular-nums">
               <span className="text-[22px] font-bold text-white">{fmtTime(scrub.target)}</span>
               <span className="text-[12px] text-white/65">/ {fmtTime(duration)}</span>
@@ -464,13 +499,30 @@ export default function Player({
         </div>
       )}
 
-      {errMsg && (
-        <div
-          className="absolute left-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[10px] leading-tight text-red-300 break-all"
-          style={{ top: cssFull ? "calc(var(--sat, 0px) + 8px)" : 8 }}>
-          {errMsg}
-        </div>
-      )}
+      {errMsg && (() => {
+        const fe = friendlyError(errMsg);
+        return (
+          <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none px-4">
+            <div className="pointer-events-auto rounded-xl p-4 max-w-[290px] w-full flex flex-col items-center gap-2.5 text-[12.5px] hg-ink-2"
+              style={{ background: "rgba(18,18,22,.86)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 10px 28px rgba(0,0,0,.45)" }}>
+              <span className="font-semibold hg-ink text-center leading-snug">{fe.summary}</span>
+              {fe.detail && <span className="select-text text-[10px] hg-ink-4 text-center break-all">{fe.detail}</span>}
+              <div className="flex items-center gap-2 mt-0.5">
+                <button type="button"
+                  onClick={() => { setErrMsg(""); setWaiting(true); setReloadTick((n) => n + 1); }}
+                  className="px-3.5 py-1.5 rounded-full hg-chip-strong hg-link text-[12px] font-semibold pressable">
+                  重新加载
+                </button>
+                <button type="button"
+                  onClick={() => setLinePickerOpen(true)}
+                  className="px-3.5 py-1.5 rounded-full hg-chip text-[12px] font-semibold hg-ink-2 pressable">
+                  切换线路
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {waiting && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -478,13 +530,14 @@ export default function Player({
         </div>
       )}
 
-      {!playing && !waiting && !scrub && (
+      {!playing && !waiting && !scrub && !errMsg && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={toggle}
             aria-label="播放"
-            className="pointer-events-auto w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
+            className="pointer-events-auto w-16 h-16 rounded-full flex items-center justify-center elev-2 pressable"
+            style={{ background: "rgba(18,18,22,.72)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.14), 0 8px 24px rgba(0,0,0,.35)" }}>
             <IPlayF size={26} className="text-white ml-0.5" />
           </button>
         </div>

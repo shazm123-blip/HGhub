@@ -1,15 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Feed from "../components/Feed";
-import { api } from "../api";
+import { api, cover } from "../api";
 import type { VideoCard } from "../types";
-import { useStore } from "../store";
+import { useStoreActions, useUiState } from "../store";
 import { IRefresh } from "../icons";
 import { Empty } from "../components/ui";
 
 const HOME_FEED_STORAGE_KEY = "hghub_home_feed_v1";
+const HOME_SNAPSHOT_KEY = "hghub_home_snapshot_v1";
 const MAX_SEEN_IDS = 200;
 const PRIMARY_RANDOM_WINDOW = 60;
 const MAX_PICK_ATTEMPTS = 3;
+
+type HomeSnapshot = { id: number; title: string; cover: string; author?: string };
+
+function loadHomeSnapshot(): HomeSnapshot | null {
+  try {
+    const raw = localStorage.getItem(HOME_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<HomeSnapshot>;
+    if (typeof parsed?.id === "number" && typeof parsed?.title === "string") {
+      return { id: parsed.id, title: parsed.title, cover: typeof parsed.cover === "string" ? parsed.cover : "", author: typeof parsed.author === "string" ? parsed.author : undefined };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveHomeSnapshot(card: VideoCard | undefined) {
+  try {
+    if (!card) return;
+    localStorage.setItem(HOME_SNAPSHOT_KEY, JSON.stringify({
+      id: card.id,
+      title: card.title,
+      cover: card.cover || "",
+      author: card.author?.name,
+    } satisfies HomeSnapshot));
+  } catch { /* ignore */ }
+}
 
 type HomeFeedPersist = {
   totalPages: number;
@@ -71,8 +98,10 @@ function pickRandomPage(visited: Set<number>, totalPages: number): number | null
 }
 
 export default function Home({ active, bottomInset }: { active: boolean; bottomInset: number }) {
-  const { toast, lineVersion, homeRefresh, history, setLinePickerOpen } = useStore();
+  const { toast, setLinePickerOpen, getHistoryIds } = useStoreActions();
+  const { lineVersion, homeRefresh } = useUiState();
   const initialPersist = useMemo(loadFeedState, []);
+  const [snapshot, setSnapshot] = useState<HomeSnapshot | null>(loadHomeSnapshot);
   const [items, setItems] = useState<VideoCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -87,17 +116,50 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
 
   const totalPagesRef = useRef(initialPersist.totalPages);
   const seenIdsRef = useRef<number[]>(initialPersist.seenIds);
-  const historyIdsRef = useRef<Set<number>>(new Set(history.map((h) => h.id)));
-  historyIdsRef.current = new Set(history.map((h) => h.id));
 
   const visitedPagesRef = useRef<Set<number>>(new Set());
   const itemsRef = useRef<VideoCard[]>([]);
   const requestSeqRef = useRef(0);
+  const feedSaveTimerRef = useRef<number | undefined>(undefined);
+  const feedDirtyRef = useRef(false);
+
+  const flushFeedState = useCallback(() => {
+    if (feedSaveTimerRef.current !== undefined) {
+      window.clearTimeout(feedSaveTimerRef.current);
+      feedSaveTimerRef.current = undefined;
+    }
+    if (!feedDirtyRef.current) return;
+    feedDirtyRef.current = false;
+    saveFeedState(totalPagesRef.current, seenIdsRef.current);
+  }, []);
+
+  const scheduleFeedStateSave = useCallback((immediate = false) => {
+    feedDirtyRef.current = true;
+    if (immediate) {
+      flushFeedState();
+      return;
+    }
+    if (feedSaveTimerRef.current !== undefined) window.clearTimeout(feedSaveTimerRef.current);
+    feedSaveTimerRef.current = window.setTimeout(() => {
+      feedSaveTimerRef.current = undefined;
+      flushFeedState();
+    }, 1500);
+  }, [flushFeedState]);
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flushFeedState();
+    };
+    window.addEventListener("pagehide", flushFeedState);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      mounted.current = false;
+      window.removeEventListener("pagehide", flushFeedState);
+      document.removeEventListener("visibilitychange", onHide);
+      flushFeedState();
+    };
+  }, [flushFeedState]);
 
   const load = useCallback(async (reset = false, notify = false) => {
     if (!reset && (loadingRef.current || doneRef.current)) return;
@@ -131,7 +193,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
 
         if (res?.pagination?.pages && res.pagination.pages > 0) {
           totalPagesRef.current = res.pagination.pages;
-          saveFeedState(totalPagesRef.current, seenIdsRef.current);
+          scheduleFeedStateSave();
         }
 
         const deduped: VideoCard[] = [];
@@ -144,9 +206,10 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
         }
         if (!deduped.length) continue;
 
+        const historyIds = getHistoryIds();
         const seenSet = new Set(seenIdsRef.current);
-        const unseen = shuffle(deduped.filter((item) => !seenSet.has(item.id) && !historyIdsRef.current.has(item.id)));
-        const seen = shuffle(deduped.filter((item) => seenSet.has(item.id) || historyIdsRef.current.has(item.id)));
+        const unseen = shuffle(deduped.filter((item) => !seenSet.has(item.id) && !historyIds.has(item.id)));
+        const seen = shuffle(deduped.filter((item) => seenSet.has(item.id) || historyIds.has(item.id)));
 
         if (unseen.length > 0) {
           chosen = unseen.length >= 3 ? unseen : [...unseen, ...seen];
@@ -160,7 +223,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
       let toCommit = chosen;
       if (!toCommit.length && fallbackBatch.length) {
         seenIdsRef.current = [];
-        saveFeedState(totalPagesRef.current, []);
+        scheduleFeedStateSave(true);
         toCommit = fallbackBatch;
       }
 
@@ -168,6 +231,15 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
         const nextItems = reset ? toCommit : [...itemsRef.current, ...toCommit];
         itemsRef.current = nextItems;
         setItems(nextItems);
+        if (reset) {
+          saveHomeSnapshot(nextItems[0]);
+          setSnapshot(nextItems[0] ? {
+            id: nextItems[0].id,
+            title: nextItems[0].title,
+            cover: nextItems[0].cover || "",
+            author: nextItems[0].author?.name,
+          } : null);
+        }
         if (notify) toast("已为你换一批", "info");
       }
 
@@ -185,7 +257,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
         if (mounted.current) setLoading(false);
       }
     }
-  }, [toast]);
+  }, [toast, scheduleFeedStateSave, getHistoryIds]);
 
   useEffect(() => {
     if (!loadingRef.current && !itemsRef.current.length && !doneRef.current) {
@@ -212,8 +284,8 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
     if (cur[0] === id) return;
     const next = [id, ...cur.filter((x) => x !== id)].slice(0, MAX_SEEN_IDS);
     seenIdsRef.current = next;
-    saveFeedState(totalPagesRef.current, next);
-  }, []);
+    scheduleFeedStateSave();
+  }, [scheduleFeedStateSave]);
 
   const ids = useMemo(() => items.map((v) => v.id), [items]);
   const covers = useMemo(() => {
@@ -249,7 +321,18 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
           <Empty icon={<IRefresh size={26} />} title="暂无视频" action="重试" onAction={() => void load(true, false)} />
         </div>
       ) : (
-        <div className="absolute inset-0 flex items-center justify-center"><div className="w-9 h-9 spinner" /></div>
+        <div className="absolute inset-0 overflow-hidden bg-black flex flex-col items-center justify-center">
+          {snapshot?.cover && (
+            <img src={cover(snapshot.cover, 480)} alt="" decoding="async"
+              className="absolute inset-0 w-full h-full object-cover opacity-30 blur-md scale-105 pointer-events-none" />
+          )}
+          <div className="relative z-10 flex flex-col items-center gap-3 px-6 text-center">
+            <div className="w-9 h-9 spinner" />
+            <div className="rounded-full bg-black/50 px-3.5 py-1.5 text-[11.5px] font-medium text-white/75">
+              正在准备推荐短剧…
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

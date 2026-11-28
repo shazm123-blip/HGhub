@@ -15,6 +15,11 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
+  resolve: {
+    alias: {
+      "hls.js": "hls.js/dist/hls.light.mjs",
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,
@@ -29,10 +34,17 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom"],
-          hls: ["hls.js"],
-          purify: ["dompurify"],
+        manualChunks(id) {
+          if (id.includes("/node_modules/react/") || id.includes("/node_modules/react-dom/") || id.includes("/node_modules/scheduler/")) {
+            return "react";
+          }
+          if (id.includes("/node_modules/hls.js/")) {
+            return "hls";
+          }
+          if (id.includes("/node_modules/dompurify/")) {
+            return "purify";
+          }
+          return undefined;
         },
       },
     },

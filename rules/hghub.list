@@ -1,14 +1,19 @@
 # HGhub - Mihomo classical/text rule-provider
-# Source inventory: 2026-11-10; see README.md for scope and evidence.
+# Source inventory: 2026-11-26; see README.md for scope and evidence.
 # Fixed API origins
 DOMAIN-SUFFIX,huangguoai.com
 DOMAIN-SUFFIX,huangguoai.ai
-# Mirror publishing page (do not match all pages.dev)
+# Mirror publishing pages (do not match all pages.dev)
 DOMAIN,huangguoai.pages.dev
-# Mirror domains published by publish.js (current: adihsppe.cc; legacy sample kept)
+DOMAIN,huang-guo.pages.dev
+# Mirror domains published by publish.js (current: oicawahgq.cc, xxslfswu.cc; legacy kept)
+DOMAIN-SUFFIX,oicawahgq.cc
+DOMAIN-SUFFIX,xxslfswu.cc
 DOMAIN-SUFFIX,adihsppe.cc
 DOMAIN-SUFFIX,xxbgwypx.cc
-# Media CDN: covers/avatars + HLS segments and keys (drleao.cn), master playlist (hzjvlo.cn)
+# Media CDN: covers/WebP/segments/keys (qnlycc.cn, legacy drleao.cn), master playlist (tjyyjk.cn, legacy hzjvlo.cn)
+DOMAIN-SUFFIX,qnlycc.cn
+DOMAIN-SUFFIX,tjyyjk.cn
 DOMAIN-SUFFIX,drleao.cn
 DOMAIN-SUFFIX,hzjvlo.cn
 # Update API and release page (shared GitHub infrastructure)

@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { api, getApiBase, isFixedLine, isMobile } from "../api";
 import type { User } from "../types";
-import { useStore } from "../store";
-import { Modal, Sheet } from "./ui";
+import { useStoreActions, useUiState } from "../store";
+import { Modal, SegmentedControl, Sheet } from "./ui";
 import { IClose, IEye, IEyeOff, ILogin } from "../icons";
 
 export default function LoginModal() {
-  const { loginOpen, setLoginOpen, setLinePickerOpen, prepareLogin, toast } = useStore();
+  const { setLoginOpen, setLinePickerOpen, prepareLogin, toast } = useStoreActions();
+  const { loginOpen } = useUiState();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -60,12 +61,13 @@ export default function LoginModal() {
         </div>
       )}
 
-      <div className="segment-control flex bg-s4 rounded-(--r-ctl) p-1 mb-3">
-        {([["login", "登录"], ["register", "注册"]] as const).map(([k, l]) => (
-          <button type="button" aria-pressed={mode === k} key={k} onClick={() => { setMode(k); setErr(""); }}
-            className={`flex-1 h-8 rounded-(--r-ctl) text-[12px] font-semibold pressable ${mode === k ? "bg-primary text-on-primary" : "text-mut"}`}>{l}</button>
-        ))}
-      </div>
+      <SegmentedControl
+        className="mb-3"
+        ariaLabel="账号操作"
+        value={mode}
+        onChange={(k) => { setMode(k); setErr(""); }}
+        options={[{ value: "login", label: "登录" }, { value: "register", label: "注册" }]}
+      />
 
       <form className="flex flex-col gap-2.5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="账号"

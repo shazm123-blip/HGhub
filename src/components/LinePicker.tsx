@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, hostOf, isMobile, setApiBase, type LineItem, type LineProbe, type LineState } from "../api";
-import { useStore } from "../store";
+import { useSessionUser, useStoreActions } from "../store";
 import { Modal, Sheet } from "./ui";
 import { IBoltF, ICheck, IClose, IRefresh, ISettings } from "../icons";
 
@@ -33,7 +33,8 @@ function Row({ item, current, probe, busy, probeDisabled, switching, onPick, onP
 
 /* 线路选择：桌面居中弹窗，移动端底部抽屉 */
 export default function LinePicker({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { toast, user, setUser, bumpLineVersion } = useStore();
+  const { toast, setUser, bumpLineVersion } = useStoreActions();
+  const user = useSessionUser();
   const [state, setState] = useState<LineState | null>(null);
   const [mirrors, setMirrors] = useState<LineItem[] | null>(null);
   const [mirrorErr, setMirrorErr] = useState("");
@@ -81,7 +82,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
   const probe = async (list: LineItem[], key: string) => {
     if (!list.length || probing || switching) return;
     const runId = ++probeRunRef.current;
-    const isBatch = key === "fixed" || key === "mirrors";
+    const isBatch = key === "fixed" || key === "mirrors" || key === "all";
     setProbing(key);
     try {
       for (let i = 0; i < list.length; i += 6) {
@@ -124,6 +125,7 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           : `线路已切换到 ${hostOf(next)}`,
         "ok",
       );
+      onClose();
     } catch (e) {
       toast((e as Error).message || "切换失败", "info");
     } finally {
@@ -161,10 +163,22 @@ export default function LinePicker({ open, onClose }: { open: boolean; onClose: 
           <div className="text-[14px] font-bold text-on leading-tight">线路</div>
           <div className="text-[11px] text-mut mt-0.5 truncate">当前：{state ? hostOf(state.base) : "读取中…"}</div>
         </div>
-        {fastest && state?.base !== fastest.item.url && (
+        {fastest && state?.base !== fastest.item.url ? (
           <button onClick={() => void pick(fastest.item.url)} disabled={!!switching}
             className="shrink-0 px-2.5 h-7 rounded-full bg-primary text-on-primary text-[11px] font-semibold flex items-center gap-1 pressable">
             <IBoltF size={11} />用最快 ({fastest.ms}ms)
+          </button>
+        ) : probing === "all" ? (
+          <button onClick={stopProbing}
+            className="shrink-0 px-2.5 h-7 rounded-full bg-danger/15 text-danger text-[11px] font-semibold pressable">
+            停止测速
+          </button>
+        ) : (
+          <button
+            onClick={() => void probe([...fixed, ...(mirrors || [])], "all")}
+            disabled={!!switching || !!probing || (!fixed.length && !mirrors?.length)}
+            className="shrink-0 px-2.5 h-7 rounded-full bg-s3 text-primary text-[11px] font-semibold flex items-center gap-1 pressable disabled:opacity-50">
+            <IBoltF size={11} />一键测速
           </button>
         )}
         <button onClick={onClose} aria-label="关闭" className="shrink-0 w-8 h-8 rounded-full bg-s3/80 flex items-center justify-center text-mut pressable"><IClose size={16} /></button>

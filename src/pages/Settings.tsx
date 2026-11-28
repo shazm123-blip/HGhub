@@ -1,8 +1,8 @@
 import IosNavigation from "../components/IosNavigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api, isIos, APP_VERSION, fmtBytes, hostOf, isMobile, logLine, platform, type UpdateInfo } from "../api";
-import { useStore } from "../store";
-import { Modal, Toggle } from "../components/ui";
+import { useHistoryState, useInteractions, usePlaybackPrefs, useStoreActions, useThemeState, useUiState } from "../store";
+import { Modal, SegmentedControl, Toggle } from "../components/ui";
 import { copyPlaybackLog, initPlaybackLog, setPlaybackLog, usePlaybackLog } from "../playbackDiagnostics";
 import {
   IBack, IBoltF, IBroom, IChevR, IHeart, IInfo, IKeyboard, ILink, ILockF, IMoon, IRefresh, IRotate, ISettings, ISun, IVolMute,
@@ -20,12 +20,12 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 const isApple = platform === "ios" || platform === "macos";
 
 export default function Settings({ onBack, wide }: { onBack: () => void; wide: boolean }) {
-  const {
-    theme, themePref, setThemePref, favs, likes, history,
-    muteOnStartup, setMuteOnStartup, landscapeFitPref, setLandscapeFitPref,
-    strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    setTab, lineVersion, setLinePickerOpen, setShortcutsOpen, toast,
-  } = useStore();
+  const { setThemePref, setStrictSecurity, setTab, setLinePickerOpen, setShortcutsOpen, toast } = useStoreActions();
+  const { theme, themePref } = useThemeState();
+  const { favs, likes } = useInteractions();
+  const history = useHistoryState();
+  const { strictSecurity, strictSecurityReady, securityPending, cliRelaxed, lineVersion } = useUiState();
+  const { muteOnStartup, setMuteOnStartup, landscapeFitPref, setLandscapeFitPref } = usePlaybackPrefs();
   const [about, setAbout] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -93,14 +93,13 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
               </div>
             </div>
             <div className="px-3.5 pb-3 -mt-1">
-              <div role="radiogroup" aria-label="外观" className={`segment-control flex p-[3px] bg-s3 ${isIos ? "rounded-[9px]" : "rounded-(--r-ctl)"}`}>
-                {([["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]] as const).map(([k, label]) => (
-                  <button key={k} role="radio" aria-checked={themePref === k} onClick={() => setThemePref(k)}
-                    className={`flex-1 h-[30px] text-[12px] transition-all duration-200 pressable ${isIos ? "rounded-[7px]" : "rounded-(--r-ctl)"} ${themePref === k ? "bg-s1 text-on font-semibold elev-1" : "text-mut"}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                role="radiogroup"
+                ariaLabel="外观"
+                value={themePref}
+                onChange={setThemePref}
+                options={[{ value: "system", label: "跟随系统" }, { value: "light", label: "浅色" }, { value: "dark", label: "深色" }]}
+              />
             </div>
           </Section>
 
@@ -121,14 +120,14 @@ export default function Settings({ onBack, wide }: { onBack: () => void; wide: b
                   <div className="text-[11px] text-mut">在手机竖屏刷到横屏剧集时的默认画面适配方式</div>
                 </div>
               </div>
-              <div role="radiogroup" aria-label="横屏视频竖屏显示" className={`segment-control flex p-[3px] mt-2.5 bg-s3 ${isIos ? "rounded-[9px]" : "rounded-(--r-ctl)"}`}>
-                {([["contain", "完整适应"], ["cover", "放大铺满"]] as const).map(([k, label]) => (
-                  <button key={k} role="radio" aria-checked={landscapeFitPref === k} onClick={() => setLandscapeFitPref(k)}
-                    className={`flex-1 h-[30px] text-[12px] transition-all duration-200 pressable ${isIos ? "rounded-[7px]" : "rounded-(--r-ctl)"} ${landscapeFitPref === k ? "bg-s1 text-on font-semibold elev-1" : "text-mut"}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                className="mt-2.5"
+                role="radiogroup"
+                ariaLabel="横屏视频竖屏显示"
+                value={landscapeFitPref}
+                onChange={setLandscapeFitPref}
+                options={[{ value: "contain", label: "完整适应" }, { value: "cover", label: "放大铺满" }]}
+              />
             </div>
           </Section>
 

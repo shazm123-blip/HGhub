@@ -46,6 +46,7 @@ pub fn resource_id(raw: &str) -> String {
 }
 
 pub fn error_kind(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
     if error.contains("禁止") || error.contains("只允许") || error.contains("控制字符") {
         if error.contains("降级") {
             "https_downgrade_denied"
@@ -54,14 +55,36 @@ pub fn error_kind(error: &str) -> &'static str {
         } else {
             "target_policy_denied"
         }
-    } else if error.contains("DNS") {
+    } else if error.contains("DNS") || lower.contains("dns") {
         "dns_error"
-    } else if error.contains("超时") || error.to_ascii_lowercase().contains("timeout") {
+    } else if error.contains("超时") || lower.contains("timeout") || lower.contains("timed out") {
         "timeout"
     } else if error.starts_with("HTTP ") {
         "http_error"
     } else if error.contains("重定向") {
         "redirect_error"
+    } else if lower.contains("tunnel") || lower.contains("proxy") {
+        "proxy_error"
+    } else if lower.contains("connection reset")
+        || lower.contains("os error 54")
+        || lower.contains("os error 104")
+        || lower.contains("broken pipe")
+        || lower.contains("unexpected eof")
+        || lower.contains("early eof")
+    {
+        "connection_reset"
+    } else if lower.contains("connection refused")
+        || lower.contains("os error 61")
+        || lower.contains("os error 111")
+    {
+        "connection_refused"
+    } else if lower.contains("certificate")
+        || lower.contains("tls")
+        || lower.contains("ssl")
+        || lower.contains("handshake")
+        || lower.contains("alert")
+    {
+        "tls_error"
     } else {
         "transport_error"
     }
@@ -201,13 +224,11 @@ pub fn record(event: &str, data: Value) {
     }
 }
 
-#[tauri::command]
-pub fn playback_log_status() -> Result<Status, String> {
+fn status_sync() -> Result<Status, String> {
     Ok(LOG.lock().map_err(|_| "日志锁失败")?.status())
 }
 
-#[tauri::command]
-pub fn playback_log_set(enabled: bool) -> Result<Status, String> {
+fn set_sync(enabled: bool) -> Result<Status, String> {
     let mut log = LOG.lock().map_err(|_| "日志锁失败")?;
     let result = log.set(enabled);
     ENABLED.store(log.enabled, Ordering::Relaxed);
@@ -215,8 +236,7 @@ pub fn playback_log_set(enabled: bool) -> Result<Status, String> {
     Ok(log.status())
 }
 
-#[tauri::command]
-pub fn playback_log_write(entries: Vec<Entry>) -> Result<(), String> {
+fn write_sync(entries: Vec<Entry>) -> Result<(), String> {
     if !enabled() {
         return Ok(());
     }
@@ -242,8 +262,7 @@ pub fn playback_log_write(entries: Vec<Entry>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn playback_log_read() -> Result<String, String> {
+fn read_sync() -> Result<String, String> {
     let log = LOG.lock().map_err(|_| "日志锁失败")?;
     let dir = log.dir.as_ref().ok_or("日志目录尚未初始化")?;
     let mut text = String::new();
@@ -259,12 +278,43 @@ pub fn playback_log_read() -> Result<String, String> {
     Ok(text)
 }
 
+#[tauri::command]
+pub async fn playback_log_status() -> Result<Status, String> {
+    tokio::task::spawn_blocking(status_sync)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn playback_log_set(enabled: bool) -> Result<Status, String> {
+    tokio::task::spawn_blocking(move || set_sync(enabled))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn playback_log_write(entries: Vec<Entry>) -> Result<(), String> {
+    if !enabled() {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(move || write_sync(entries))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn playback_log_read() -> Result<String, String> {
+    tokio::task::spawn_blocking(read_sync)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn commands_stop_writes_when_disabled_and_read_retained_logs() {
+    #[tokio::test]
+    async fn commands_stop_writes_when_disabled_and_read_retained_logs() {
         let dir = std::env::temp_dir().join(format!(
             "hghub-playback-commands-{}-{}",
             std::process::id(),
@@ -272,25 +322,27 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         bind(&dir);
-        assert!(!playback_log_status().unwrap().enabled);
+        assert!(!playback_log_status().await.unwrap().enabled);
         record("test.off", json!({"n": 1}));
         assert!(!dir.join("playback.log").exists());
-        playback_log_set(true).unwrap();
+        playback_log_set(true).await.unwrap();
         playback_log_write(vec![Entry {
             event: "seek.request".into(),
             data: json!({"player": "p1", "seek": 1, "target": 30}),
         }])
+        .await
         .unwrap();
-        playback_log_set(false).unwrap();
+        playback_log_set(false).await.unwrap();
         let size = fs::metadata(dir.join("playback.log")).unwrap().len();
         playback_log_write(vec![Entry {
             event: "seek.request".into(),
             data: json!({"seek": 2}),
         }])
+        .await
         .unwrap();
         record("test.off", json!({"n": 2}));
         assert_eq!(fs::metadata(dir.join("playback.log")).unwrap().len(), size);
-        let text = playback_log_read().unwrap();
+        let text = playback_log_read().await.unwrap();
         assert!(text.contains("web.seek.request"));
         assert!(!text.contains("test.off"));
         bind(&dir);
@@ -345,5 +397,37 @@ mod tests {
         assert!(log.set(false).is_err());
         assert!(log.enabled);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn error_kind_classifies_reset_refused_tls_and_proxy_errors() {
+        assert_eq!(
+            error_kind("error sending request for url (https://pic.qnlycc.cn/a.jpg) ← client error (Connect) ← Connection reset by peer (os error 54)"),
+            "connection_reset"
+        );
+        assert_eq!(
+            error_kind("error sending request ← unexpected EOF"),
+            "connection_reset"
+        );
+        assert_eq!(
+            error_kind("error sending request ← client error (Connect) ← Connection refused (os error 61)"),
+            "connection_refused"
+        );
+        assert_eq!(
+            error_kind("error sending request ← invalid peer certificate: UnknownIssuer"),
+            "tls_error"
+        );
+        assert_eq!(
+            error_kind("error sending request ← received fatal alert: HandshakeFailure"),
+            "tls_error"
+        );
+        assert_eq!(
+            error_kind("tunnel error: failed to create underlying connection"),
+            "proxy_error"
+        );
+        assert_eq!(error_kind("请求超时"), "timeout");
+        assert_eq!(error_kind("dns lookup failed"), "dns_error");
+        assert_eq!(error_kind("HTTP 404 Not Found"), "http_error");
+        assert_eq!(error_kind("禁止访问普通内网"), "private_address_denied");
     }
 }

@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useStore, type Tab } from "../store";
+import { useStoreActions, useNavState, useSessionUser, useThemeState, useUiState, type Tab } from "../store";
 import { hasBackHandler, isPlaybackLocked } from "../back";
 import { APP_VERSION } from "../api";
 import { Avatar } from "./ui";
@@ -14,7 +14,9 @@ import {
 const appWindow = () => getCurrentWindow();
 
 export function DesktopTitleBar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  const { theme, setTheme, setTab, theater, setTheater } = useStore();
+  const { setTheme, setTab, setTheater } = useStoreActions();
+  const { theme } = useThemeState();
+  const { theater } = useUiState();
   const [maxed, setMaxed] = useState(false);
   useEffect(() => {
     let un: (() => void) | undefined;
@@ -68,7 +70,10 @@ export function DesktopTitleBar({ collapsed, onToggle }: { collapsed: boolean; o
 }
 
 export function MacToolbar({ collapsed, theater, onToggle }: { collapsed: boolean; theater: boolean; onToggle: () => void }) {
-  const { tab, stack, setTab, push, travel, canGoBack, canGoForward, loginOpen, linePickerOpen, shortcutsOpen, themePref, theme, setTheme, setTheater } = useStore();
+  const { setTab, push, travel, setTheme, setTheater } = useStoreActions();
+  const { tab, stack, canGoBack, canGoForward } = useNavState();
+  const { loginOpen, linePickerOpen, shortcutsOpen } = useUiState();
+  const { themePref, theme } = useThemeState();
   const page = stack.at(-1);
   const titles = { home: "首页", category: "分类", profile: "我的", search: "搜索", ranks: "排行榜", settings: "设置", posts: "黄果吃瓜", post: "吃瓜详情" };
   const title = page?.kind === "feed" ? page.title : page?.kind === "channel" ? page.name : titles[page?.kind ?? tab];
@@ -134,7 +139,9 @@ export function MacToolbar({ collapsed, theater, onToggle }: { collapsed: boolea
 }
 
 export function DesktopRail({ collapsed }: { collapsed: boolean }) {
-  const { tab, setTab, bumpHomeRefresh, user, setLoginOpen, push, platform, stack } = useStore();
+  const { platform, setTab, bumpHomeRefresh, setLoginOpen, push } = useStoreActions();
+  const { tab, stack } = useNavState();
+  const user = useSessionUser();
   /* 从侧栏进入的栈页（排行榜 / 设置）接管高亮，否则「我的」会一直亮着，看起来不像独立页面 */
   const top = stack[stack.length - 1];
   const railPage: "ranks" | "settings" | null =

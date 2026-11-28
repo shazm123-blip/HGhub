@@ -1,5 +1,5 @@
 import { useEffect, useRef, type PointerEvent } from "react";
-import { hasBackHandler, isPlaybackLocked } from "../back";
+import { hasBackHandler, isPlaybackLocked, markNextPopImmediate } from "../back";
 
 export default function IosBackEdge({ onBack }: { onBack: () => void }) {
   const drag = useRef<{ start: number; width: number; front: HTMLElement; behind: HTMLElement; id: number } | null>(null);
@@ -36,7 +36,10 @@ export default function IosBackEdge({ onBack }: { onBack: () => void }) {
       settling.current = [slide, reveal];
       slide.onfinish = () => {
         reset();
-        if (commit && !hasBackHandler() && !isPlaybackLocked()) onBack();
+        if (commit && !hasBackHandler() && !isPlaybackLocked()) {
+          markNextPopImmediate();
+          onBack();
+        }
       };
     } else {
       d.front.style.translate = x + "px";

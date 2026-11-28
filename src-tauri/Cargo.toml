@@ -29,17 +29,19 @@ time = { version = "0.3", features = ["formatting"] }
 # 症状正是「浏览器能开官网、HGhub 打不开」。见 src/net.rs 顶部说明。
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
+  "http2",
   "system-proxy",
   "gzip",
   "brotli",
   "json",
-  "charset",
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 aes = "0.8"
 base64 = "0.22"
 percent-encoding = "2"
 once_cell = "1"
+# dx150-edge-v1 接口加密（ECDH P-256 + HKDF-SHA256 + AES-256-GCM），与 rustls 共用 Cargo.lock 中的 ring
+ring = "0.17"
 url = "2"
 
 # macOS 红绿灯垂直居中需要读取 AppKit 按钮尺寸（见 src/macos_titlebar.rs）。

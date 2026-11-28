@@ -1,7 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, platform as envPlatform, getApiBase, observeSessionExpiry, SESSION_EXPIRED_MESSAGE, setApiBase } from "./api";
-import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./html";
+import { isStrictSecurity, setStrictSecurity as setHtmlStrictSecurity } from "./security";
+import {
+  bindVideoMetaPersistence,
+  clearVideoDetailCache,
+  flushVideoMetaCache,
+  getVideoOrientation,
+  recordVideoOrientation,
+  seedLegacyVideoMetaCache,
+  upsertVideoSnapshot,
+} from "./videoMeta";
 import type { FollowAuthor, User, VideoOrientationMeta, VideoSnapshot } from "./types";
 
 export type Platform = "android" | "ios" | "windows" | "macos" | "linux";
@@ -46,9 +55,6 @@ export type Toast = { id: number; msg: string; icon?: "ok" | "heart" | "star" | 
 /** 观看记录：看到第几集、第几秒（`dur` 用来判断是否已看完） */
 export type WatchProgress = { id: number; ep: number; t: number; dur: number; at: number };
 
-const MAX_SNAPSHOTS = 120;
-const MAX_ORIENTATIONS = 300;
-
 type Interactions = {
   likes: number[];
   likeEpisodes?: Record<number, number[]>;
@@ -67,32 +73,37 @@ type InteractionOptions = {
   author?: { name: string; avatar?: string };
 };
 
-type Persist = Interactions & {
-  accounts: Record<string, Interactions>;
-  history: WatchProgress[];
+type PlaybackPrefsState = {
   landscapeFitPref: "contain" | "cover";
   muted: boolean;
   muteOnStartup: boolean;
   volume: number;
+  playbackRate: number;
+};
+
+const VALID_PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+function sanitizePlaybackRate(raw: unknown): number {
+  const n = Number(raw);
+  return (VALID_PLAYBACK_RATES as readonly number[]).includes(n) ? n : 1;
+}
+
+type Persist = Interactions & {
+  accounts: Record<string, Interactions>;
+  history: WatchProgress[];
   searchHist: string[];
 };
 
-type CachePersist = {
-  videoSnapshots: Record<number, VideoSnapshot>;
-  videoOrientations: Record<number, VideoOrientationMeta>;
-};
-
 const LS = "hghub_app_v1";
-const LS_CACHE = "hghub_cache_v1";
 const EMPTY_INTERACTIONS: Interactions = { likes: [], favs: [], follows: [], followAuthors: {} };
 const DEFAULTS: Persist = {
-  ...EMPTY_INTERACTIONS, history: [], accounts: {},
-  landscapeFitPref: "contain",
-  muted: true, muteOnStartup: true, volume: 0.7, searchHist: [],
+  ...EMPTY_INTERACTIONS, history: [], accounts: {}, searchHist: [],
 };
-const CACHE_DEFAULTS: CachePersist = {
-  videoSnapshots: {},
-  videoOrientations: {},
+const PREF_DEFAULTS: PlaybackPrefsState = {
+  landscapeFitPref: "contain",
+  muted: true,
+  muteOnStartup: true,
+  volume: 0.7,
+  playbackRate: 1,
 };
 
 /** 旧版本 history 是 number[]，读出来时升级成带进度的结构 */
@@ -112,14 +123,18 @@ function normalizeHistory(raw: unknown): WatchProgress[] {
   return out;
 }
 
-function loadPersistState(): { persist: Persist; cache: CachePersist; migratedCache: boolean } {
+function loadPersistState(): { persist: Persist; prefs: PlaybackPrefsState; migratedCache: boolean } {
   let persist: Persist = DEFAULTS;
+  let prefs: PlaybackPrefsState = PREF_DEFAULTS;
   let legacySnapshots: Record<number, VideoSnapshot> | undefined;
   let legacyOrientations: Record<number, VideoOrientationMeta> | undefined;
   try {
     const raw = localStorage.getItem(LS);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<Persist & CachePersist>;
+      const parsed = JSON.parse(raw) as Partial<Persist & PlaybackPrefsState & {
+        videoSnapshots?: Record<number, VideoSnapshot>;
+        videoOrientations?: Record<number, VideoOrientationMeta>;
+      }>;
       if (parsed.videoSnapshots && typeof parsed.videoSnapshots === "object") legacySnapshots = parsed.videoSnapshots;
       if (parsed.videoOrientations && typeof parsed.videoOrientations === "object") legacyOrientations = parsed.videoOrientations;
       const muteOnStartup = parsed.muteOnStartup !== false;
@@ -133,34 +148,20 @@ function loadPersistState(): { persist: Persist; cache: CachePersist; migratedCa
         history: normalizeHistory(parsed.history),
         follows: Array.isArray(parsed.follows) ? parsed.follows : DEFAULTS.follows,
         followAuthors: parsed.followAuthors && typeof parsed.followAuthors === "object" ? parsed.followAuthors : {},
+        searchHist: Array.isArray(parsed.searchHist) ? parsed.searchHist : DEFAULTS.searchHist,
+      };
+      prefs = {
         landscapeFitPref: parsed.landscapeFitPref === "cover" ? "cover" : "contain",
         muted: muteOnStartup || parsed.muted === true,
         muteOnStartup,
-        volume: typeof parsed.volume === "number" ? parsed.volume : DEFAULTS.volume,
-        searchHist: Array.isArray(parsed.searchHist) ? parsed.searchHist : DEFAULTS.searchHist,
+        volume: typeof parsed.volume === "number" ? parsed.volume : PREF_DEFAULTS.volume,
+        playbackRate: sanitizePlaybackRate(parsed.playbackRate),
       };
     }
   } catch { /* ignore */ }
 
-  let cache: CachePersist = CACHE_DEFAULTS;
-  let migratedCache = false;
-  try {
-    const rawCache = localStorage.getItem(LS_CACHE);
-    if (rawCache) {
-      const parsedCache = JSON.parse(rawCache) as Partial<CachePersist>;
-      cache = {
-        videoSnapshots: parsedCache.videoSnapshots && typeof parsedCache.videoSnapshots === "object" ? parsedCache.videoSnapshots : {},
-        videoOrientations: parsedCache.videoOrientations && typeof parsedCache.videoOrientations === "object" ? parsedCache.videoOrientations : {},
-      };
-    } else if (legacySnapshots || legacyOrientations) {
-      cache = {
-        videoSnapshots: legacySnapshots || {},
-        videoOrientations: legacyOrientations || {},
-      };
-      migratedCache = true;
-    }
-  } catch { /* ignore */ }
-  return { persist, cache, migratedCache };
+  const migratedCache = seedLegacyVideoMetaCache(legacySnapshots, legacyOrientations);
+  return { persist, prefs, migratedCache };
 }
 
 const isApple = envPlatform === "ios" || envPlatform === "macos";
@@ -189,61 +190,140 @@ function applyTheme(theme: Theme) {
   if (meta) meta.setAttribute("content", bg || (theme === "light" ? "#f9f9f9" : "#1a1a1a"));
 }
 
-type Store = {
+type PlaybackPrefs = PlaybackPrefsState & {
+  setLandscapeFitPref: (fit: "contain" | "cover") => void;
+  setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
+  setMuteOnStartup: (on: boolean) => void;
+  setVolume: (v: number) => void;
+  setPlaybackRate: (r: number) => void;
+};
+
+export type NavState = {
+  tab: Tab;
+  stack: Page[];
+  canGoBack: boolean;
+  canGoForward: boolean;
+};
+
+export type ThemeState = {
+  theme: Theme;
+  themePref: ThemePref;
+};
+
+export type InteractionsState = {
+  likes: number[];
+  favs: number[];
+  follows: number[];
+  followAuthors: Record<number, FollowAuthor>;
+  isLiked: (id: number, post?: boolean) => boolean;
+  isFav: (id: number, post?: boolean) => boolean;
+};
+
+export type UiState = {
+  loginOpen: boolean;
+  linePickerOpen: boolean;
+  shortcutsOpen: boolean;
+  theater: boolean;
+  fs: boolean;
+  strictSecurity: boolean;
+  strictSecurityReady: boolean;
+  securityPending: boolean;
+  cliRelaxed: boolean;
+  lineVersion: number;
+  homeRefresh: number;
+  searchIntent: { q: string; seq: number } | null;
+};
+
+export type StoreActions = {
   platform: Platform;
-  /** 实际生效的外观（已解析「跟随系统」） */
-  theme: Theme; setTheme: (t: Theme) => void;
-  themePref: ThemePref; setThemePref: (t: ThemePref) => void;
-  tab: Tab; setTab: (t: Tab) => void;
-  canGoBack: boolean; canGoForward: boolean; travel: (offset: -1 | 1) => void;
-  stack: Page[]; push: (p: PageInput) => void; pop: () => void;
-  user: User | null; setUser: (u: User | null) => void;
+  setTheme: (t: Theme) => void;
+  setThemePref: (t: ThemePref) => void;
+  setTab: (t: Tab) => void;
+  travel: (offset: -1 | 1) => void;
+  push: (p: PageInput) => void;
+  pop: () => void;
+  setUser: (u: User | null) => void;
   handleSessionError: (error: unknown) => void;
   prepareLogin: () => (user: User) => void;
-  loginOpen: boolean; setLoginOpen: (b: boolean) => void;
-  linePickerOpen: boolean; setLinePickerOpen: (b: boolean) => void;
-  shortcutsOpen: boolean; setShortcutsOpen: (b: boolean) => void;
+  setLoginOpen: (b: boolean) => void;
+  setLinePickerOpen: (b: boolean) => void;
+  setShortcutsOpen: (b: boolean) => void;
   logout: () => Promise<void>;
-  likes: number[]; favs: number[]; history: WatchProgress[]; follows: number[];
-  followAuthors: Record<number, FollowAuthor>;
-  videoSnapshots: Record<number, VideoSnapshot>;
   upsertVideoSnapshot: (snap: Omit<VideoSnapshot, "updatedAt">) => void;
   recordVideoOrientation: (id: number, w: number, h: number) => void;
   getVideoOrientation: (id: number) => VideoOrientationMeta | undefined;
-  landscapeFitPref: "contain" | "cover";
-  setLandscapeFitPref: (fit: "contain" | "cover") => void;
-  isLiked: (id: number, post?: boolean) => boolean; isFav: (id: number, post?: boolean) => boolean;
   changeInteraction: (field: InteractionField, id: number, options?: InteractionOptions) => Promise<boolean | null>;
   removeHistory: (id: number) => void;
   /** 记一条观看记录；`ep/t/dur` 省略时保留原进度，`ep` 变了就把进度归零 */
   addHistory: (id: number, ep?: number, t?: number, dur?: number, immediate?: boolean) => void;
   clearHistory: () => void;
-  theater: boolean; setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
-  fs: boolean; setFs: (v: boolean | ((p: boolean) => boolean)) => void;
-  muted: boolean; setMuted: (v: boolean | ((p: boolean) => boolean)) => void;
-  muteOnStartup: boolean; setMuteOnStartup: (on: boolean) => void;
-  volume: number; setVolume: (v: number) => void;
-  searchHist: string[]; addSearch: (q: string) => void; removeSearchHist: (q: string) => void; clearSearchHist: () => void;
-  strictSecurity: boolean; strictSecurityReady: boolean; securityPending: boolean; cliRelaxed: boolean; setStrictSecurity: (on: boolean) => Promise<void>;
-  lineVersion: number; bumpLineVersion: () => void;
-  homeRefresh: number; bumpHomeRefresh: () => void;
-  toasts: Toast[]; toast: (msg: string, icon?: Toast["icon"]) => void;
+  getWatchProgress: (id: number) => WatchProgress | undefined;
+  getHistoryIds: () => Set<number>;
+  setTheater: (v: boolean | ((p: boolean) => boolean)) => void;
+  setFs: (v: boolean | ((p: boolean) => boolean)) => void;
+  addSearch: (q: string) => void;
+  removeSearchHist: (q: string) => void;
+  clearSearchHist: () => void;
+  setStrictSecurity: (on: boolean) => Promise<void>;
+  bumpLineVersion: () => void;
+  bumpHomeRefresh: () => void;
+  searchFor: (q: string) => void;
+  toast: (msg: string, icon?: Toast["icon"]) => void;
 };
 
-const Ctx = createContext<Store>(null as unknown as Store);
-export const useStore = () => useContext(Ctx);
+type Store = StoreActions & NavState & ThemeState & InteractionsState & UiState & {
+  user: User | null;
+  history: WatchProgress[];
+  searchHist: string[];
+};
+
+const ActionsCtx = createContext<StoreActions>(null as unknown as StoreActions);
+const NavCtx = createContext<NavState>(null as unknown as NavState);
+const ThemeCtx = createContext<ThemeState>(null as unknown as ThemeState);
+const SessionCtx = createContext<User | null>(null);
+const UiCtx = createContext<UiState>(null as unknown as UiState);
+const InteractionsCtx = createContext<InteractionsState>(null as unknown as InteractionsState);
+const HistoryCtx = createContext<WatchProgress[]>([]);
+const SearchHistCtx = createContext<string[]>([]);
+const ToastCtx = createContext<Toast[]>([]);
+const PlaybackPrefsCtx = createContext<PlaybackPrefs>(null as unknown as PlaybackPrefs);
+
+export const useStoreActions = () => useContext(ActionsCtx);
+export const useNavState = () => useContext(NavCtx);
+export const useThemeState = () => useContext(ThemeCtx);
+export const useSessionUser = () => useContext(SessionCtx);
+export const useUiState = () => useContext(UiCtx);
+export const useInteractions = () => useContext(InteractionsCtx);
+export const useHistoryState = () => useContext(HistoryCtx);
+export const useSearchHistory = () => useContext(SearchHistCtx);
+export const useToasts = () => useContext(ToastCtx);
+export const usePlaybackPrefs = () => useContext(PlaybackPrefsCtx);
+
+/** 兼容入口：需要完整订阅的组件可继续使用 `useStore()`，高频路径推荐按切片 hook 订阅 */
+export function useStore(): Store {
+  const actions = useStoreActions();
+  const nav = useNavState();
+  const themeState = useThemeState();
+  const user = useSessionUser();
+  const ui = useUiState();
+  const inter = useInteractions();
+  const history = useHistoryState();
+  const searchHist = useSearchHistory();
+  return useMemo(
+    () => ({ ...actions, ...nav, ...themeState, user, ...ui, ...inter, history, searchHist }),
+    [actions, nav, themeState, user, ui, inter, history, searchHist],
+  );
+}
 let seq = 0;
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const initialRef = useRef<ReturnType<typeof loadPersistState> | null>(null);
   if (!initialRef.current) initialRef.current = loadPersistState();
   const [p, setPersist] = useState<Persist>(initialRef.current.persist);
-  const [cache, setCache] = useState<CachePersist>(initialRef.current.cache);
+  const [prefs, setPrefsState] = useState<PlaybackPrefsState>(initialRef.current.prefs);
   const pRef = useRef(p);
-  const cacheRef = useRef(cache);
-  cacheRef.current = cache;
+  const prefsRef = useRef(prefs);
   const dirtyPRef = useRef(initialRef.current.migratedCache);
-  const dirtyCacheRef = useRef(initialRef.current.migratedCache);
   const setP = useCallback((update: (previous: Persist) => Persist) => {
     const next = update(pRef.current);
     if (next === pRef.current) return;
@@ -251,9 +331,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dirtyPRef.current = true;
     setPersist(next);
   }, []);
-  const skipFirstCacheRef = useRef(true);
+  const setPrefs = useCallback((update: (previous: PlaybackPrefsState) => PlaybackPrefsState) => {
+    const next = update(prefsRef.current);
+    if (next === prefsRef.current) return;
+    prefsRef.current = next;
+    dirtyPRef.current = true;
+    setPrefsState(next);
+  }, []);
   const pTimerRef = useRef<number | undefined>(undefined);
-  const cacheTimerRef = useRef<number | undefined>(undefined);
   const [themePref, setThemePref] = useState<ThemePref>(readThemePref);
   const [sysTheme, setSysTheme] = useState<Theme>(systemTheme);
   const theme: Theme = themePref === "system" ? sysTheme : themePref;
@@ -280,8 +365,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [securityPending, setSecurityPending] = useState(false);
   const [lineVersion, setLineVersion] = useState(0);
   const [homeRefresh, setHomeRefresh] = useState(0);
+  const [searchIntent, setSearchIntent] = useState<{ q: string; seq: number } | null>(null);
   const toastSeq = useRef(0);
-  const bumpLineVersion = useCallback(() => setLineVersion((v) => v + 1), []);
+  const searchIntentSeq = useRef(0);
+  const bumpLineVersion = useCallback(() => {
+    clearVideoDetailCache();
+    setLineVersion((v) => v + 1);
+  }, []);
   const bumpHomeRefresh = useCallback(() => setHomeRefresh((v) => v + 1), []);
 
   useEffect(() => {
@@ -299,20 +389,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch { /* ignore */ }
   }, [theme, themePref]);
 
+  const writeAppPersist = useCallback(() => {
+    try {
+      localStorage.setItem(LS, JSON.stringify({ ...pRef.current, ...prefsRef.current }));
+    } catch { /* ignore */ }
+  }, []);
+
   const flushPersist = useCallback(() => {
     window.clearTimeout(pTimerRef.current);
     pTimerRef.current = undefined;
-    window.clearTimeout(cacheTimerRef.current);
-    cacheTimerRef.current = undefined;
     if (dirtyPRef.current) {
       dirtyPRef.current = false;
-      try { localStorage.setItem(LS, JSON.stringify(pRef.current)); } catch { /* ignore */ }
+      writeAppPersist();
     }
-    if (dirtyCacheRef.current) {
-      dirtyCacheRef.current = false;
-      try { localStorage.setItem(LS_CACHE, JSON.stringify(cacheRef.current)); } catch { /* ignore */ }
-    }
-  }, []);
+    flushVideoMetaCache();
+  }, [writeAppPersist]);
 
   useEffect(() => {
     if (!dirtyPRef.current) return;
@@ -320,26 +411,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     pTimerRef.current = window.setTimeout(() => {
       pTimerRef.current = undefined;
       dirtyPRef.current = false;
-      try { localStorage.setItem(LS, JSON.stringify(pRef.current)); } catch { /* ignore */ }
+      writeAppPersist();
     }, 1500);
-  }, [p]);
+  }, [p, prefs, writeAppPersist]);
 
   useEffect(() => {
-    if (skipFirstCacheRef.current) {
-      skipFirstCacheRef.current = false;
-      if (!dirtyCacheRef.current) return;
-    } else {
-      dirtyCacheRef.current = true;
-    }
-    window.clearTimeout(cacheTimerRef.current);
-    cacheTimerRef.current = window.setTimeout(() => {
-      cacheTimerRef.current = undefined;
-      dirtyCacheRef.current = false;
-      try { localStorage.setItem(LS_CACHE, JSON.stringify(cacheRef.current)); } catch { /* ignore */ }
-    }, 2000);
-  }, [cache]);
-
-  useEffect(() => {
+    const unbindMeta = bindVideoMetaPersistence();
     const onHide = () => {
       if (document.visibilityState === "hidden") flushPersist();
     };
@@ -349,6 +426,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("pagehide", flushPersist);
       document.removeEventListener("visibilitychange", onHide);
       flushPersist();
+      unbindMeta();
     };
   }, [flushPersist]);
 
@@ -458,8 +536,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const toast = useCallback((msg: string, icon?: Toast["icon"]) => {
     const id = ++toastSeq.current;
+    const duration = Math.max(2200, Math.min(3800, 1400 + msg.length * 80));
     setToasts((t) => [...t.slice(-2), { id, msg, icon }]);
-    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2200);
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), duration);
   }, []);
 
   const setFs = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
@@ -493,6 +572,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [setFs, syncTheaterForDest]);
   const setTab = useCallback((tab: Tab) => navigate(current =>
     current.tab === tab && !current.stack.length ? current : { tab, stack: [] }), [navigate]);
+  const searchFor = useCallback((raw: string) => {
+    const q = raw.trim();
+    if (!q) return;
+    setTab("search");
+    setSearchIntent({ q, seq: ++searchIntentSeq.current });
+  }, [setTab]);
   const push = useCallback((pg: PageInput) => {
     const page = { ...pg, key: `p${++seq}` } as Page;
     navigate(current => ({ ...current, stack: [...current.stack, page] }));
@@ -602,46 +687,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [accountKey, revision, setP, handleSessionError]);
   const removeHistory = useCallback((id: number) => {
     setP((s) => ({ ...s, history: s.history.filter((x) => x.id !== id) }));
-  }, []);
-  const upsertVideoSnapshot = useCallback((snap: Omit<VideoSnapshot, "updatedAt">) => {
-    if (!snap.id || !snap.title) return;
-    setCache((s) => {
-      const cur = s.videoSnapshots[snap.id];
-      const nextEntry: VideoSnapshot = { ...cur, ...snap, updatedAt: Date.now() };
-      const map: Record<number, VideoSnapshot> = { ...s.videoSnapshots, [snap.id]: nextEntry };
-      const keys = Object.keys(map);
-      if (keys.length > MAX_SNAPSHOTS) {
-        const sorted = keys
-          .map((k) => map[Number(k)])
-          .filter(Boolean)
-          .sort((a, b) => b.updatedAt - a.updatedAt)
-          .slice(0, MAX_SNAPSHOTS);
-        const trimmed: Record<number, VideoSnapshot> = {};
-        for (const item of sorted) trimmed[item.id] = item;
-        return { ...s, videoSnapshots: trimmed };
-      }
-      return { ...s, videoSnapshots: map };
-    });
-  }, []);
-  const recordVideoOrientation = useCallback((id: number, w: number, h: number) => {
-    if (!id || w <= 0 || h <= 0) return;
-    const orientation: VideoOrientationMeta["orientation"] = w > h ? "landscape" : "portrait";
-    setCache((s) => {
-      const prev = s.videoOrientations[id];
-      if (prev && prev.orientation === orientation && prev.w === w && prev.h === h) return s;
-      const entries = Object.entries(s.videoOrientations);
-      const map: Record<number, VideoOrientationMeta> =
-        entries.length >= MAX_ORIENTATIONS
-          ? Object.fromEntries(entries.slice(-(MAX_ORIENTATIONS - 1)))
-          : { ...s.videoOrientations };
-      map[id] = { orientation, w, h };
-      return { ...s, videoOrientations: map };
-    });
-  }, []);
-  const getVideoOrientation = useCallback((id: number) => cacheRef.current.videoOrientations[id], []);
+  }, [setP]);
   const setLandscapeFitPref = useCallback((fit: "contain" | "cover") => {
-    setP((s) => (s.landscapeFitPref === fit ? s : { ...s, landscapeFitPref: fit }));
-  }, []);
+    setPrefs((s) => (s.landscapeFitPref === fit ? s : { ...s, landscapeFitPref: fit }));
+  }, [setPrefs]);
   const addHistory = useCallback((id: number, ep?: number, t?: number, dur?: number, immediate = false) => {
     if (!id) return;
     setP((s) => {
@@ -658,16 +707,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     if (immediate) flushPersist();
   }, [flushPersist, setP]);
-  const clearHistory = useCallback(() => setP((s) => ({ ...s, history: [] })), []);
+  const clearHistory = useCallback(() => setP((s) => ({ ...s, history: [] })), [setP]);
   const addSearch = useCallback((q: string) => {
     const t = q.trim();
     if (!t) return;
     setP((s) => ({ ...s, searchHist: [t, ...s.searchHist.filter((x) => x !== t)].slice(0, 12) }));
-  }, []);
+  }, [setP]);
   const removeSearchHist = useCallback((q: string) => {
     setP((s) => ({ ...s, searchHist: s.searchHist.filter((x) => x !== q) }));
-  }, []);
-  const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), []);
+  }, [setP]);
+  const clearSearchHist = useCallback(() => setP((s) => ({ ...s, searchHist: [] })), [setP]);
 
   const logout = useCallback(async () => {
     if (sessionChange.current !== revision) return;
@@ -682,42 +731,110 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setMuted = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
-    setP((s) => ({ ...s, muted: typeof v === "function" ? v(s.muted) : v }));
-  }, []);
+    setPrefs((s) => ({ ...s, muted: typeof v === "function" ? v(s.muted) : v }));
+  }, [setPrefs]);
   const setMuteOnStartup = useCallback((on: boolean) => {
-    setP((s) => ({ ...s, muteOnStartup: on }));
-  }, []);
+    setPrefs((s) => ({ ...s, muteOnStartup: on }));
+  }, [setPrefs]);
   const setVolume = useCallback((v: number) => {
     const volume = Math.max(0, Math.min(1, v));
-    setP((s) => ({ ...s, volume, muted: volume === 0 }));
-  }, []);
+    setPrefs((s) => ({ ...s, volume, muted: volume === 0 }));
+  }, [setPrefs]);
+  const setPlaybackRate = useCallback((r: number) => {
+    const playbackRate = sanitizePlaybackRate(r);
+    setPrefs((s) => (s.playbackRate === playbackRate ? s : { ...s, playbackRate }));
+  }, [setPrefs]);
 
-  const value = useMemo<Store>(() => ({
+  const getWatchProgress = useCallback((id: number) => pRef.current.history.find((x) => x.id === id), []);
+  const getHistoryIds = useCallback(() => new Set(pRef.current.history.map((x) => x.id)), []);
+
+  const playbackPrefsValue = useMemo<PlaybackPrefs>(() => ({
+    landscapeFitPref: prefs.landscapeFitPref,
+    setLandscapeFitPref,
+    muted: prefs.muted,
+    setMuted,
+    muteOnStartup: prefs.muteOnStartup,
+    setMuteOnStartup,
+    volume: prefs.volume,
+    setVolume,
+    playbackRate: prefs.playbackRate,
+    setPlaybackRate,
+  }), [prefs, setLandscapeFitPref, setMuted, setMuteOnStartup, setVolume, setPlaybackRate]);
+
+  const actionsValue = useMemo<StoreActions>(() => ({
     platform: envPlatform,
-    theme, setTheme, themePref, setThemePref,
-    canGoBack: navigation.index > 0, canGoForward: navigation.index < navigation.entries.length - 1, travel,
-    tab, setTab, stack, push, pop,
-    user, setUser, handleSessionError, prepareLogin, loginOpen, setLoginOpen, linePickerOpen, setLinePickerOpen, shortcutsOpen, setShortcutsOpen, logout,
-    likes: interactions.likes, favs: interactions.favs, history: p.history, follows: interactions.follows,
-    followAuthors: interactions.followAuthors, videoSnapshots: cache.videoSnapshots,
+    setTheme, setThemePref,
+    setTab, travel, push, pop,
+    setUser, handleSessionError, prepareLogin,
+    setLoginOpen, setLinePickerOpen, setShortcutsOpen, logout,
     upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation,
-    landscapeFitPref: p.landscapeFitPref, setLandscapeFitPref,
-    isLiked: (id, post) => (post ? interactions.postLikes : interactions.likes)?.includes(id) ?? false,
-    isFav: (id, post) => (post ? interactions.postFavs : interactions.favs)?.includes(id) ?? false,
     changeInteraction, removeHistory, addHistory, clearHistory,
-    muted: p.muted, setMuted, volume: p.volume, setVolume,
-    theater, setTheater, fs, setFs,
-    muteOnStartup: p.muteOnStartup, setMuteOnStartup,
-    searchHist: p.searchHist, addSearch, removeSearchHist, clearSearchHist,
-    strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    lineVersion, bumpLineVersion,
-    homeRefresh, bumpHomeRefresh,
-    toasts, toast,
-  }), [navigation, travel, theme, setTheme, themePref, tab, setTab, stack, push, pop, user, setUser, handleSessionError, prepareLogin, loginOpen, linePickerOpen, shortcutsOpen, logout,
-    p, interactions, cache, upsertVideoSnapshot, recordVideoOrientation, getVideoOrientation, setLandscapeFitPref,
+    getWatchProgress, getHistoryIds,
+    setTheater, setFs,
+    addSearch, removeSearchHist, clearSearchHist,
+    setStrictSecurity, bumpLineVersion, bumpHomeRefresh, searchFor, toast,
+  }), [
+    setTheme, setTab, travel, push, pop,
+    setUser, handleSessionError, prepareLogin, logout,
     changeInteraction, removeHistory, addHistory, clearHistory,
-    setMuted, setMuteOnStartup, setVolume, addSearch, removeSearchHist, clearSearchHist, strictSecurity, strictSecurityReady, securityPending, cliRelaxed, setStrictSecurity,
-    lineVersion, bumpLineVersion, homeRefresh, bumpHomeRefresh, toasts, toast, theater, setTheater, fs, setFs]);
+    getWatchProgress, getHistoryIds,
+    setTheater, setFs,
+    addSearch, removeSearchHist, clearSearchHist,
+    setStrictSecurity, bumpLineVersion, bumpHomeRefresh, searchFor, toast,
+  ]);
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  const navValue = useMemo<NavState>(() => ({
+    tab, stack,
+    canGoBack: navigation.index > 0,
+    canGoForward: navigation.index < navigation.entries.length - 1,
+  }), [tab, stack, navigation.index, navigation.entries.length]);
+
+  const themeValue = useMemo<ThemeState>(() => ({ theme, themePref }), [theme, themePref]);
+
+  const uiValue = useMemo<UiState>(() => ({
+    loginOpen, linePickerOpen, shortcutsOpen, theater, fs,
+    strictSecurity, strictSecurityReady, securityPending, cliRelaxed,
+    lineVersion, homeRefresh, searchIntent,
+  }), [
+    loginOpen, linePickerOpen, shortcutsOpen, theater, fs,
+    strictSecurity, strictSecurityReady, securityPending, cliRelaxed,
+    lineVersion, homeRefresh, searchIntent,
+  ]);
+
+  const interactionsValue = useMemo<InteractionsState>(() => {
+    const likeSet = new Set(interactions.likes);
+    const postLikeSet = new Set(interactions.postLikes);
+    const favSet = new Set(interactions.favs);
+    const postFavSet = new Set(interactions.postFavs);
+    return {
+      likes: interactions.likes,
+      favs: interactions.favs,
+      follows: interactions.follows,
+      followAuthors: interactions.followAuthors,
+      isLiked: (id, post) => (post ? postLikeSet : likeSet).has(id),
+      isFav: (id, post) => (post ? postFavSet : favSet).has(id),
+    };
+  }, [interactions]);
+
+  return (
+    <ActionsCtx.Provider value={actionsValue}>
+      <NavCtx.Provider value={navValue}>
+        <ThemeCtx.Provider value={themeValue}>
+          <SessionCtx.Provider value={user}>
+            <UiCtx.Provider value={uiValue}>
+              <InteractionsCtx.Provider value={interactionsValue}>
+                <HistoryCtx.Provider value={p.history}>
+                  <SearchHistCtx.Provider value={p.searchHist}>
+                    <PlaybackPrefsCtx.Provider value={playbackPrefsValue}>
+                      <ToastCtx.Provider value={toasts}>{children}</ToastCtx.Provider>
+                    </PlaybackPrefsCtx.Provider>
+                  </SearchHistCtx.Provider>
+                </HistoryCtx.Provider>
+              </InteractionsCtx.Provider>
+            </UiCtx.Provider>
+          </SessionCtx.Provider>
+        </ThemeCtx.Provider>
+      </NavCtx.Provider>
+    </ActionsCtx.Provider>
+  );
 }
