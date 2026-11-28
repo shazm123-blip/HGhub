@@ -48,7 +48,8 @@ xcodebuild build \
   -destination 'generic/platform=iOS' \
   -derivedDataPath "$ROOT/build_output" \
   TOOLCHAIN_DIR="$XCODE_TOOLCHAIN" \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+  DEPLOYMENT_POSTPROCESSING=YES STRIP_INSTALLED_PRODUCT=YES STRIP_STYLE=all DEAD_CODE_STRIPPING=YES COPY_PHASE_STRIP=YES
 
 APP="$ROOT/build_output/Build/Products/release-iphoneos/HGhub.app"
 EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
